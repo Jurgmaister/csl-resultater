@@ -1,7 +1,7 @@
 /* CSL Resultater – brukergrensesnitt */
 (() => {
   const S = {
-    db: null, sb: null, session: null, dl: null, canWrite: false, login: false, loginSent: "", admins: null, ready: false, slow: false, offline: false,
+    db: null, sb: null, session: null, dl: null, canWrite: false, login: false, loginMode: "in", loginSent: "", loginEmail: "", admins: null, ready: false, slow: false, offline: false,
     leagues: [], lid: null, drivers: [], results: {}, unsubs: [],
     tab: "standings", stMode: "all", resMode: "all", sel: null,
     imp: { round: 1, race: null, parsed: null, file: "", err: "", paste: false, busy: false },
@@ -89,6 +89,7 @@
     sb.auth.onAuthStateChange((ev, session) => {
       const was = S.session && S.session.user.id, now = session && session.user.id;
       S.session = session;
+      if (ev === "PASSWORD_RECOVERY") { S.login = true; S.loginMode = "newpw"; render(); return; }
       if (was !== now) { S.login = false; S.loginSent = ""; checkAdmin(); }
     });
     sb.channel("csl-endringer")
@@ -157,14 +158,33 @@
 
   /* ---------------- innlogging ---------------- */
   function viewLogin() {
-    return `<section class="panel narrow"><h2>Logg inn</h2>
-      ${S.loginSent ? `<p>Vi har sendt en innloggingslenke til <b>${esc(S.loginSent)}</b>. Åpne e-posten og trykk på lenken, så kommer du tilbake hit innlogget.</p>
-        <p class="muted small">Finner du den ikke, sjekk søppelpost. Lenken kan bare brukes én gang.</p>
-        <div class="row"><button class="btn ghost" data-act="loginAgain">Bruk en annen e-post</button><button class="btn ghost" data-act="closeLogin">Tilbake</button></div>`
-      : `<p class="muted">Skriv e-postadressen din, så får du en innloggingslenke. Bare arrangører som er lagt til kan importere og redigere.</p>
-        <form data-form="login" class="stack"><label class="fld"><span>E-post</span><input id="loginEmail" type="email" required autocomplete="email" /></label>
-        <div class="row"><button class="btn primary" type="submit" ${S.busy === "login" ? "disabled" : ""}>Send innloggingslenke</button><button class="btn ghost" type="button" data-act="closeLogin">Avbryt</button></div></form>`}
-      </section>`;
+    const m = S.loginMode, busy = S.busy === "login" ? "disabled" : "";
+    const email = `<label class="fld"><span>E-post</span><input id="loginEmail" type="email" required autocomplete="email" value="${esc(S.loginEmail)}" /></label>`;
+    const cancel = `<button class="btn ghost" type="button" data-act="closeLogin">Avbryt</button>`;
+    let body;
+    if (m === "sent") body = `<p>Vi har sendt en lenke til <b>${esc(S.loginSent)}</b>. Trykk på lenken i e-posten for å velge nytt passord.</p>
+      <p class="muted small">Finner du den ikke, sjekk søppelpost. Supabase sender bare noen få slike e-poster i timen.</p>
+      <div class="row"><button class="btn ghost" data-act="loginMode" data-v="in">Tilbake til innlogging</button></div>`;
+    else if (m === "newpw") body = `<p class="muted">Velg et nytt passord for ${esc((S.session && S.session.user.email) || "kontoen din")}.</p>
+      <form data-form="newpw" class="stack"><label class="fld"><span>Nytt passord (minst 8 tegn)</span><input id="pw1" type="password" required minlength="8" autocomplete="new-password" /></label>
+      <label class="fld"><span>Gjenta passordet</span><input id="pw2" type="password" required minlength="8" autocomplete="new-password" /></label>
+      <div class="row"><button class="btn primary" type="submit" ${busy}>Lagre passord</button></div></form>`;
+    else if (m === "up") body = `<p class="muted">Første gang? Lag et passord for e-postadressen din. Du kan importere og redigere når en arrangør har lagt deg til under Oppsett → Arrangører.</p>
+      <form data-form="signup" class="stack">${email}
+      <label class="fld"><span>Velg passord (minst 8 tegn)</span><input id="pw1" type="password" required minlength="8" autocomplete="new-password" /></label>
+      <label class="fld"><span>Gjenta passordet</span><input id="pw2" type="password" required minlength="8" autocomplete="new-password" /></label>
+      <div class="row"><button class="btn primary" type="submit" ${busy}>Opprett konto</button>${cancel}</div></form>
+      <p class="small">Har du allerede konto? <button class="linkbtn" data-act="loginMode" data-v="in">Logg inn</button></p>`;
+    else if (m === "forgot") body = `<p class="muted">Skriv e-postadressen din, så sender vi en lenke der du kan velge nytt passord.</p>
+      <form data-form="forgot" class="stack">${email}<div class="row"><button class="btn primary" type="submit" ${busy}>Send lenke</button>
+      <button class="btn ghost" type="button" data-act="loginMode" data-v="in">Tilbake</button></div></form>`;
+    else body = `<p class="muted">For arrangører. Alle andre kan se standings og resultater uten å logge inn.</p>
+      <form data-form="login" class="stack">${email}
+      <label class="fld"><span>Passord</span><input id="loginPw" type="password" required autocomplete="current-password" /></label>
+      <div class="row"><button class="btn primary" type="submit" ${busy}>Logg inn</button>${cancel}</div></form>
+      <p class="small"><button class="linkbtn" data-act="loginMode" data-v="up">Ny arrangør? Lag passord</button> · <button class="linkbtn" data-act="loginMode" data-v="forgot">Glemt passord?</button></p>`;
+    const title = { up: "Lag passord", forgot: "Glemt passord", sent: "Sjekk e-posten", newpw: "Nytt passord" }[m] || "Logg inn";
+    return `<section class="panel narrow"><h2>${title}</h2>${body}</section>`;
   }
 
   /* ---------------- ny liga ---------------- */
@@ -547,9 +567,9 @@
 
   /* ---------------- hendelser ---------------- */
   const ACT = {
-    login: () => { S.login = true; S.loginSent = ""; render(); },
+    login: () => { S.login = true; S.loginMode = "in"; S.loginSent = ""; render(); },
     closeLogin: () => { S.login = false; render(); },
-    loginAgain: () => { S.loginSent = ""; render(); },
+    loginMode: (b) => { const e = $("#loginEmail"); if (e) S.loginEmail = e.value.trim(); S.loginMode = b.dataset.v; render(); },
     logout: async () => { await S.sb.auth.signOut(); S.session = null; S.canWrite = false; if (["import", "setup"].includes(S.tab)) S.tab = "standings"; render(); },
     rmAdmin: async (b) => { const ok = await write(() => DATA.removeAdmin(b.dataset.email), "Arrangøren er fjernet."); if (ok) { S.admins = null; render(); } },
     tab: (b) => { S.tab = b.dataset.v; S.confirm = null; render(); window.scrollTo(0, 0); },
@@ -595,13 +615,48 @@
   });
   document.addEventListener("submit", async (e) => {
     const f = e.target.closest("[data-form]"); if (!f) return; e.preventDefault();
+    const authErr = (error) => {
+      const m = (error && error.message) || "";
+      if (/invalid login credentials/i.test(m)) return "Feil e-post eller passord.";
+      if (/email not confirmed/i.test(m)) return "E-postadressen er ikke bekreftet. Slå av «Confirm email» i Supabase, eller trykk på lenken i e-posten.";
+      if (/already registered|already exists/i.test(m)) return "Kontoen finnes allerede. Logg inn, eller bruk «Glemt passord?».";
+      if (/rate|too many/i.test(m)) return "For mange forsøk. Vent litt og prøv igjen.";
+      if (/password/i.test(m)) return "Passordet er for svakt. Bruk minst 8 tegn.";
+      return m || "Noe gikk galt. Prøv igjen.";
+    };
+    const pwPair = () => { const a = $("#pw1").value, b = $("#pw2").value; if (a !== b) { toast("Passordene er ikke like.", "err"); return null; } return a; };
     if (f.dataset.form === "login") {
-      const email = $("#loginEmail").value.trim(); if (!email) return;
+      const email = $("#loginEmail").value.trim(), password = $("#loginPw").value; S.loginEmail = email;
       S.busy = "login"; render();
-      const { error } = await S.sb.auth.signInWithOtp({ email, options: { emailRedirectTo: location.origin + location.pathname, shouldCreateUser: true } });
+      const { error } = await S.sb.auth.signInWithPassword({ email, password });
       S.busy = "";
-      if (error) { toast(/rate/i.test(error.message) ? "For mange forsøk. Vent litt og prøv igjen." : "Kunne ikke sende lenken: " + error.message, "err"); render(); return; }
-      S.loginSent = email; render(); return;
+      if (error) { toast(authErr(error), "err"); render(); const p = $("#loginPw"); if (p) p.focus(); return; }
+      S.login = false; render(); return;
+    }
+    if (f.dataset.form === "signup") {
+      const email = $("#loginEmail").value.trim(), password = pwPair(); S.loginEmail = email; if (!password) return;
+      S.busy = "login"; render();
+      const { data, error } = await S.sb.auth.signUp({ email, password, options: { emailRedirectTo: location.origin + location.pathname } });
+      S.busy = "";
+      if (error) { toast(authErr(error), "err"); render(); return; }
+      if (!data.session) { S.loginSent = email; S.loginMode = "sent"; toast("Kontoen er opprettet. Bekreft e-postadressen via lenken i e-posten."); render(); return; }
+      S.login = false; toast("Kontoen er opprettet, og du er logget inn."); render(); return;
+    }
+    if (f.dataset.form === "forgot") {
+      const email = $("#loginEmail").value.trim(); S.loginEmail = email;
+      S.busy = "login"; render();
+      const { error } = await S.sb.auth.resetPasswordForEmail(email, { redirectTo: location.origin + location.pathname });
+      S.busy = "";
+      if (error) { toast(authErr(error), "err"); render(); return; }
+      S.loginSent = email; S.loginMode = "sent"; render(); return;
+    }
+    if (f.dataset.form === "newpw") {
+      const password = pwPair(); if (!password) return;
+      S.busy = "login"; render();
+      const { error } = await S.sb.auth.updateUser({ password });
+      S.busy = "";
+      if (error) { toast(authErr(error), "err"); render(); return; }
+      S.login = false; S.loginMode = "in"; toast("Passordet er lagret."); checkAdmin(); return;
     }
     if (f.dataset.form === "addAdmin") {
       const email = $("#adminEmail").value.trim(); if (!email) return;

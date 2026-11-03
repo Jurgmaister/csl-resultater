@@ -21,10 +21,14 @@ Nettsiden kjører på GitHub Pages. Data og innlogging ligger i Supabase.
 **Settings → Pages → Build and deployment**: *Deploy from a branch*, branch `main`, mappe `/ (root)`.
 Siden blir tilgjengelig på `https://jurgmaister.github.io/csl-resultater/`.
 
-## Arrangører
-Arrangører legges til under **Oppsett → Arrangører** (e-postadresse). De logger inn med en lenke som
-sendes på e-post. Supabase sin innebygde e-post tåler noen få innlogginger i timen. Blir det for lite,
-kan dere koble på egen SMTP under *Authentication → Emails*.
+## Arrangører og innlogging
+Arrangører logger inn med e-post og passord. Første gang trykker de «Ny arrangør? Lag passord».
+Kontoen gir redigeringstilgang først når e-posten er lagt til under **Oppsett → Arrangører**
+(den første arrangøren legges inn nederst i `supabase/schema.sql`).
+
+I Supabase: **Authentication → Sign In / Providers → Email** – slå av *Confirm email*, så kan nye
+arrangører lage passord uten å vente på e-post. «Glemt passord?» sender fortsatt en e-post, og
+Supabase sin innebygde e-post tillater bare noen få slike i timen.
 
 ## Filer
 | Fil | Innhold |
