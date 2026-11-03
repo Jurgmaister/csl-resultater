@@ -567,6 +567,7 @@
 
   /* ---------------- hendelser ---------------- */
   const ACT = {
+    home: () => { S.login = false; S.newLeague = false; S.confirm = null; S.tab = "standings"; render(); window.scrollTo(0, 0); },
     login: () => { S.login = true; S.loginMode = "in"; S.loginSent = ""; render(); },
     closeLogin: () => { S.login = false; render(); },
     loginMode: (b) => { const e = $("#loginEmail"); if (e) S.loginEmail = e.value.trim(); S.loginMode = b.dataset.v; render(); },
