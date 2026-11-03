@@ -287,14 +287,14 @@
     columns.push({ label: "Car", w: 200, align: "l" }, { label: "Start\nPos", w: 44, align: "c" }, { label: "Interval", w: 76, align: "r" },
       { label: "Laps\nLed", w: 40, align: "c" }, { label: "Fastest\nLap Time", w: 70, align: "c" }, { label: "Laps\nComp", w: 44, align: "c" },
       { label: "Inc", w: 36, align: "c" }, { label: "Points", w: 52, align: "c", bold: true }, { label: "Penalty", w: 56, align: "c" });
-    const out = [], styles = [];
+    const out = [], styles = [], gap = gapFn(rows, mode, res);
     list.forEach((r) => {
       const pos = mode === "d2" ? (r.dq ? "DSQ" : r.d2pos) : r.dq ? "DSQ" : r.cpos;
       const pen = r.p ? (r.p.t === "pts" ? "-" + fmtPts(r.p.v) : r.p.t) : 0;
       const row = mode === "d2" ? [pos, r.dq ? "" : r.cpos] : [pos];
       row.push(r.num, r.name);
       if (mode === "all" && d2on) row.push(r.div);
-      row.push(r.car, r.start ?? "", r.dq && !/L$/.test(r.gap) ? r.out : r.gap, r.led, r.best, r.laps, r.inc,
+      row.push(r.car, r.start ?? "", gap(r), r.led, r.best, r.laps, r.inc,
         fmtPtsNum(mode === "d2" ? r.d2pts ?? 0 : r.pts), pen);
       out.push(row);
       const rk = mode === "d2" ? r.d2pos : r.cpos;
@@ -304,6 +304,19 @@
     const track = trackOf(L, res.round);
     const title = `${L.name} - ${raceName} results${mode === "d2" ? " " + d2n : ""} from ${track}`;
     return { rows, title, sheet: `R${res.round} ${raceShort(L, res.race)}${mode === "d2" ? " Div2" : ""}`, columns, rows2: out, styles };
+  }
+
+  /** Vinneren viser total løpstid, resten gap. I Division 2 regnes gap fra Div 2-vinneren. */
+  function gapFn(rows, mode, res) {
+    const leader = rows.find((r) => (mode === "d2" ? r.d2pos === 1 : r.cpos === 1));
+    const lg = leader ? (mode === "d2" ? CORE.secs(leader.gap) : 0) : null;
+    const T = +res.raceTime || 0;
+    return (r) => {
+      if (r.dq && !/L$/.test(r.gap)) return r.out;
+      if (r === leader) return T && lg != null ? CORE.fmtTime(T + lg) : r.gap;
+      if (mode === "d2" && lg) { const g = CORE.secs(r.gap); if (g != null) return CORE.fmtGap(Math.max(0, g - lg)); }
+      return r.gap;
+    };
   }
 
   function viewResults(L) {
@@ -324,13 +337,17 @@
     const d2n = (L.d2 && L.d2.name) || "Division 2";
     const imported = res.importedAt ? new Date(res.importedAt).toLocaleString("nb-NO", { dateStyle: "short", timeStyle: "short" }) : "";
     const confirmDel = S.confirm === "delRes:" + res.id;
-    const ctrl = S.canWrite ? `<label class="chk"><input type="checkbox" data-chg="half" ${res.half ? "checked" : ""}/> Halve poeng</label>
+    const srcTxt = { fil: "fra filen", beregnet: "beregnet fra snittid × runder", manuell: "lagt inn manuelt" }[res.raceTimeSrc] || "";
+    const rtCtl = S.canWrite ? `<label class="rtbox"><span>Løpstid vinner</span><input id="rtInput" class="mono" value="${esc(CORE.fmtTime(res.raceTime))}" placeholder="mm:ss.000" data-chg="raceTime" aria-label="Total løpstid for vinneren" /></label>${srcTxt ? `<span class="muted small">${srcTxt}</span>` : ""}`
+      : "";
+    const ctrl = S.canWrite ? `${rtCtl}<label class="chk"><input type="checkbox" data-chg="half" ${res.half ? "checked" : ""}/> Halve poeng</label>
       ${confirmDel ? `<span class="confirm">Slette resultatet? <button class="btn sm danger" data-act="delRes">Slett</button><button class="btn sm ghost" data-act="cancelConfirm">Avbryt</button></span>`
         : `<button class="btn sm ghost" data-act="askDelRes">Slett resultat</button>`}` : "";
     const head = `<div class="viewhead"><div><h2>R${res.round} ${esc(raceLabel(L, res.race))} · ${esc(trackOf(L, res.round))}</h2>
       <p class="muted">${esc(res.format || "")}${res.source ? " · " + esc(res.source) : ""}${imported ? " · importert " + imported : ""}</p></div>
       <div class="tools">${d2on ? `<div class="seg"><button class="${mode === "all" ? "on" : ""}" data-act="resMode" data-v="all">Totalt</button><button class="${mode === "d2" ? "on" : ""}" data-act="resMode" data-v="d2">${esc(d2n)}</button></div>` : ""}${exportBar("race")}</div></div>`;
     const list = mode === "d2" ? m.rows.filter((r) => r.d2pos != null || (r.dq && r.div === 2)) : m.rows;
+    const gap = gapFn(m.rows, mode, res);
     const body = list.map((r) => {
       const pos = mode === "d2" ? (r.dq ? "DSQ" : r.d2pos) : r.dq ? "DSQ" : r.cpos;
       const rk = mode === "d2" ? r.d2pos : r.cpos;
@@ -339,7 +356,7 @@
         ${mode === "d2" ? `<td class="num muted">${r.dq ? "" : r.cpos}</td>` : ""}
         <td class="num">${esc(r.num)}</td><td class="name">${esc(r.name)}</td>
         ${mode === "all" && d2on ? `<td class="num"><span class="div d${r.div}" title="Divisjon fra ${r.divSrc}">${r.div}</span></td>` : ""}
-        <td class="car">${esc(r.car)}</td><td class="num">${r.start ?? ""}</td><td class="num mono">${esc(r.dq && !/L$/.test(r.gap) ? r.out : r.gap)}</td>
+        <td class="car">${esc(r.car)}</td><td class="num">${r.start ?? ""}</td><td class="num mono ${(mode === "d2" ? r.d2pos : r.cpos) === 1 && res.raceTime ? "rtime" : ""}">${esc(gap(r))}</td>
         <td class="num">${r.led}</td><td class="num mono">${esc(r.best)}</td><td class="num">${r.laps}</td><td class="num">${r.inc}</td>
         <td class="num tot">${fmtPts(pts)}</td><td class="pen">${penCell(r)}</td></tr>`;
     }).join("");
@@ -436,7 +453,8 @@
     const p = I.parsed, base = "leagues/" + L.id;
     const ok = await write(async () => {
       await S.db.doc(base + "/results/" + id).set({ round: I.round, race: I.race, format: p.format, source: I.file || "Innlimt tekst",
-        track: p.track || "", date: p.date || "", importedAt: new Date().toISOString(), half: false, pen: {}, rows: p.rows });
+        track: p.track || "", date: p.date || "", importedAt: new Date().toISOString(), half: false, pen: {}, rows: p.rows,
+        raceTime: p.raceTime || null, raceTimeSrc: p.raceTimeSrc || "" });
       const dm = driverMap();
       for (const r of p.rows) {
         const d = dm.get(CORE.norm(r.name)); const cls = r.cls === 1 || r.cls === 2 ? r.cls : null;
@@ -694,6 +712,11 @@
     if (c === "impRound") { S.imp.round = +t.value; render(); }
     if (c === "impRace") { S.imp.race = t.value; render(); }
     if (c === "file" && t.files[0]) readFile(t.files[0]);
+    if (c === "raceTime") {
+      const v = t.value.trim(); const sec = v ? CORE.secs(v) : null;
+      if (v && !(sec > 0)) { toast("Skriv tiden som mm:ss.000, for eksempel 20:20.571.", "err"); return; }
+      await write(() => S.db.doc("leagues/" + L.id + "/results/" + S.sel).update({ raceTime: sec, raceTimeSrc: sec ? "manuell" : "" }), sec ? "Løpstiden er lagret." : "Løpstiden er fjernet.");
+    }
     if (c === "half") await write(() => S.db.doc("leagues/" + L.id + "/results/" + S.sel).update({ half: t.checked }));
     if (c === "penT" || c === "penV") {
       const key = t.dataset.key, res = S.results[S.sel]; const cur = (res.pen || {})[key];

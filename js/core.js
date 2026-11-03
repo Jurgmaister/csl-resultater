@@ -36,9 +36,14 @@ const CORE = (() => {
   function secs(s) {
     s = String(s == null ? "" : s).trim().replace(/^[-+]/, "");
     if (!s || /L$/i.test(s)) return null;
-    const p = s.split(":");
-    const v = p.length > 1 ? (+p[0]) * 60 + parseFloat(p[1]) : parseFloat(p[0]);
+    const v = s.split(":").reduce((a, x) => a * 60 + parseFloat(x), 0);
     return isFinite(v) ? v : null;
+  }
+  function fmtTime(sec) {
+    if (sec == null || !isFinite(sec) || sec <= 0) return "";
+    const t = Math.round(sec * 1000), h = Math.floor(t / 3600000), m = Math.floor((t % 3600000) / 60000),
+      s = Math.floor((t % 60000) / 1000), ms = t % 1000;
+    return (h > 0 ? h + ":" + pad(m, 2) : m) + ":" + pad(s, 2) + "." + pad(ms, 3);
   }
   function fmtGap(sec) {
     if (sec == null) return "";
@@ -70,6 +75,7 @@ const CORE = (() => {
       pos: col("Fin Pos"), name: col("Name"), num: col("Car #"), car: isIRC ? col("Car Type") : col("Car"),
       start: col("Start Pos"), iv: col("Interval"), led: col("Laps Led"), best: col("Fastest Lap Time"),
       laps: col("Laps Comp"), inc: col("Inc"), out: col("Out"), cls: col("Car Class ID"), cust: col("Cust ID"),
+      avg: col("Average Lap Time"), rtime: col("Race Time") >= 0 ? col("Race Time") : col("Total Time"),
     };
     if (c.name < 0) throw new Error("Fant ikke kolonnen «Name» i filen.");
     const g = (r, k) => (c[k] >= 0 && r[c[k]] != null ? String(r[c[k]]).trim() : "");
@@ -83,6 +89,7 @@ const CORE = (() => {
         laps: int(g(r, "laps")) ?? 0, led: int(g(r, "led")) ?? 0, inc: int(g(r, "inc")) ?? 0,
         best: best === "0" ? "" : best, out: g(r, "out"), dq: isDQ(g(r, "out")),
         cls: c.cls >= 0 ? int(g(r, "cls")) : null, cust: c.cust >= 0 ? int(g(r, "cust")) : null, _iv: g(r, "iv"),
+        _avg: g(r, "avg"), _rt: g(r, "rtime"),
       });
     }
     if (!out.length) throw new Error("Fant ingen resultatrader under overskriftene.");
@@ -100,8 +107,17 @@ const CORE = (() => {
       }
       delete r._iv;
     });
+    // Løpstid for vinneren: egen kolonne hvis filen har det, ellers snittid × runder
+    const w = out.find((r) => !r.dq) || out[0];
+    let raceTime = null, raceTimeSrc = "";
+    if (w) {
+      const rt = secs(w._rt), avg = secs(w._avg);
+      if (rt && rt > 0) { raceTime = rt; raceTimeSrc = "fil"; }
+      else if (avg && avg > 0 && w.laps > 0) { raceTime = Math.round(avg * w.laps * 1000) / 1000; raceTimeSrc = "beregnet"; }
+    }
+    out.forEach((r) => { delete r._avg; delete r._rt; });
     return { format: isIRC ? "iRaceControl CSV" : "iRacing CSV", track: meta.track || "", date: meta.date || "", rows: out,
-             hasClass: c.cls >= 0 };
+             hasClass: c.cls >= 0, raceTime, raceTimeSrc };
   }
 
   function parseJSON(text) {
@@ -136,7 +152,7 @@ const CORE = (() => {
         start: startsUseful && r.starting_position >= 0 ? r.starting_position + 1 : null, laps, led: r.laps_lead || 0,
         inc: r.incidents || 0, best: r.best_lap_time > 0 ? fmtLap(r.best_lap_time / 10000) : "", out: r.reason_out || "",
         dq: isDQ(r.reason_out), cls: cls === 1 || cls === 2 ? cls : (cls > 0 ? cls : null), cust: dr.cust_id || null, gap,
-        _iv: r.interval > 0 ? r.interval / 10000 : 0,
+        _iv: r.interval > 0 ? r.interval / 10000 : 0, _avg: r.average_lap > 0 ? r.average_lap / 10000 : 0,
       };
     }).sort((a, b) => a.pos - b.pos);
     // iRacing JSON: interval er til bilen foran (1/10000 s) – summeres til avstand til leder
@@ -146,9 +162,12 @@ const CORE = (() => {
       else if (i > 0 && !broke && r.gap) { cum += r._iv; r.gap = fmtGap(cum); }
       delete r._iv;
     });
+    const w = rows.find((r) => !r.dq) || rows[0];
+    const raceTime = w && w._avg > 0 && w.laps > 0 ? Math.round(w._avg * w.laps * 1000) / 1000 : null;
+    rows.forEach((r) => delete r._avg);
     const t = d.track || {};
     const track = [t.track_name, t.config_name].filter(Boolean).join(" – ");
-    return { format: "iRacing JSON", track, date: d.start_time || "", rows, hasClass: true };
+    return { format: "iRacing JSON", track, date: d.start_time || "", rows, hasClass: true, raceTime, raceTimeSrc: raceTime ? "beregnet" : "" };
   }
 
   function parseFile(name, text) {
@@ -253,6 +272,6 @@ const CORE = (() => {
   }
 
   return { defaultScale, norm, parseCSVText, parseCSV, parseJSON, parseFile, computeRace, computeStandings, raceKeys,
-           cslTemplate, fmtGap, fmtLap, secs, isDQ };
+           cslTemplate, fmtGap, fmtLap, fmtTime, secs, isDQ };
 })();
 if (typeof module !== "undefined") module.exports = CORE;
