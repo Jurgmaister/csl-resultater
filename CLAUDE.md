@@ -24,6 +24,7 @@ siste først når noen eksporterer.
 | `js/app.js` | Grensesnittet: faner Standings, Resultater, Importer, Førere, Oppsett; innlogging |
 | `js/config.js` | Supabase-adresse og publishable key (offentlige, trygge i koden) |
 | `supabase/schema.sql` | Tabeller, tilgangsregler (RLS) og sanntid |
+| `supabase/protester.sql` | Protestsystemet alene (samme innhold som nederst i `schema.sql`), for eksisterende prosjekt |
 | `assets/csl-logo.jpg` | CSL-logoen (vikinghode) |
 
 ## Databasen
@@ -32,6 +33,13 @@ Tabeller: `leagues` (navn + `config` jsonb med runder, løp, poengskala, divisjo
 `drivers`, `results` (`rid` = `r{runde}-{løpsnøkkel}`, f.eks. `r1-H`; rader, straff, halve poeng og
 løpstid i `data` jsonb) og `admins` (e-post for arrangører).
 Alle kan lese. Bare innloggede som står i `admins` (sjekkes med `is_admin()`) kan skrive.
+
+Protester: `protests` (sak per liga med løpende `no`, `decision` jsonb), `protest_events` (sakshistorikk;
+`private` = bare stewards og forfatteren ser den; `token` -1/+1 teller protester per fører per runde),
+`driver_links` (innlogget bruker ↔ fører, godkjennes av arrangør) og `stewards` (`is_steward()` = arrangør
+eller steward). Stewards skriver direkte i `protests`/`protest_events`. Førere skriver bare via
+funksjonene `file_protest` og `protest_reply`, som sjekker kobling, frist, video og antall protester.
+Oppsettet ligger i `leagues.config.protests` (`CORE.protestDefaults`).
 Endringer i skjemaet må kjøres manuelt i Supabase SQL Editor og legges inn i `supabase/schema.sql`.
 Legg aldri inn `service_role`- eller secret-nøkkelen, og ingen e-postadresser, i koden.
 
@@ -47,6 +55,12 @@ Legg aldri inn `service_role`- eller secret-nøkkelen, og ingen e-postadresser, 
 - Vinneren viser total løpstid: kolonnen «Race Time» hvis filen har den, ellers snittid × runder, eller
   tid lagt inn manuelt.
 - Lik poengsum avgjøres av beste enkeltresultater (største poeng først).
+- Straffer fra protestsaker lagres ikke i resultatet, men beregnes fra avgjorte saker (`decision.apply`,
+  status `decided`/`closed`) med `CORE.protestPens` og sendes inn i `computeRace`/`computeStandings`.
+  Gjenåpnes en sak, forsvinner straffen til den er avgjort på nytt. Typer: poengtrekk, tidsstraff
+  (sekunder på tiden for førere på samme runde som vinneren, sorterer på nytt) og DSQ. Manuelle straffer
+  i `results.data.pen` kommer i tillegg.
+- Protestfrist: midnatt etter rundens dato + `deadlineH` timer (Europe/Oslo). Runder uten dato har ingen frist.
 
 ## Design
 

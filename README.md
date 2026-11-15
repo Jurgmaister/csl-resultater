@@ -22,13 +22,36 @@ Nettsiden kjører på GitHub Pages. Data og innlogging ligger i Supabase.
 Siden blir tilgjengelig på `https://jurgmaister.github.io/csl-resultater/`.
 
 ## Arrangører og innlogging
-Arrangører logger inn med e-post og passord. Første gang trykker de «Ny arrangør? Lag passord».
+Arrangører logger inn med e-post og passord. Første gang trykker de «Første gang? Lag passord».
 Kontoen gir redigeringstilgang først når e-posten er lagt til under **Oppsett → Arrangører**
 (den første arrangøren legges inn nederst i `supabase/schema.sql`).
 
 I Supabase: **Authentication → Sign In / Providers → Email** – slå av *Confirm email*, så kan nye
 arrangører lage passord uten å vente på e-post. «Glemt passord?» sender fortsatt en e-post, og
 Supabase sin innebygde e-post tillater bare noen få slike i timen.
+
+## Protester
+Førere kan sende inn protester på hendelser, og stewards avgjør dem. Alle kan lese sakene og avgjørelsene
+under fanen **Protester**.
+
+Slik slår du det på:
+1. Kjør `supabase/protester.sql` i Supabase (**SQL Editor → New query → lim inn → Run**). Den er også
+   med nederst i `schema.sql` for nye prosjekter.
+2. **Oppsett → Protester**: kryss av for «Ta imot protester», og sett frister, antall protester per
+   runde og hendelsestyper. Sett dato på rundene under **Runder**. Fristen regnes fra midnatt etter løpsdagen.
+3. **Oppsett → Stewards**: legg til e-posten til dem som skal avgjøre saker (arrangører kan også).
+
+Førere logger inn (første gang: «Første gang? Lag passord»), velger seg selv i førerlisten under
+Protester, og en arrangør godkjenner koblingen under **Førere**. Deretter kan de:
+- sende inn en protest med løp, fører, runde, replay-tid, beskrivelse og lenke til video
+- legge til svar eller nytt bevis før saken er avgjort (bare stewards ser det)
+- anke en avgjørelse innen ankefristen
+
+En protest eller anke koster én av førerens protester for runden, og gis tilbake hvis den fører fram.
+
+Når stewards publiserer en straff (poengtrekk, tidsstraff eller DSQ) med «Legg straffen inn i resultatet»,
+oppdateres resultatlisten og standings med en gang, og straffen vises med lenke til saken. Tidsstraff
+legger sekunder til tiden og kan endre plasseringene. Mens saker er åpne, er resultatet merket «Foreløpig».
 
 ## Filer
 | Fil | Innhold |
@@ -40,3 +63,4 @@ Supabase sin innebygde e-post tillater bare noen få slike i timen.
 | `js/app.js` | Brukergrensesnittet |
 | `js/config.js` | Supabase-adresse og offentlig nøkkel |
 | `supabase/schema.sql` | Tabeller og tilgangsregler |
+| `supabase/protester.sql` | Tabeller og funksjoner for protestsystemet (kjøres én gang i eksisterende prosjekt) |

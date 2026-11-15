@@ -179,23 +179,58 @@ const CORE = (() => {
   const round2 = (v) => Math.round(v * 100) / 100;
   const scaleVal = (scale, p) => (p >= 1 && p <= scale.length ? +scale[p - 1] || 0 : 0);
 
-  /** Beregner plass og poeng for ett løp. drivers: Map(normKey -> driver) */
-  function computeRace(result, league, drivers) {
+  /** Tidsstraff: legger sekunder til tiden for førere på samme runde som vinneren og sorterer på nytt.
+      Førere som er runde(r) bak beholder rekkefølgen. Endrer pos og gap, og gir vinneren rtAdd
+      (sekunder vinnerens tid er lengre enn opprinnelig vinnertid). */
+  function applyTimePens(rows) {
+    if (!rows.some((r) => r.tpen)) return;
+    const live = rows.filter((r) => !r.dq).sort((a, b) => a.pos - b.pos);
+    let prevK = 0;
+    live.forEach((r, i) => {
+      r.origPos = r.pos;
+      const ld = lapsDown(r.gap), g = secs(r.gap);
+      if (ld != null) { r._k = Math.max(ld, prevK); r._t = i; }
+      else if (prevK === 0 && (g != null || i === 0)) { r._k = 0; r._t = (g || 0) + (r.tpen || 0); }
+      else { r._k = Math.max(prevK, 1); r._t = i; } // bak en runde-bak-fører eller uten tid: behold rekkefølgen
+      prevK = r._k;
+    });
+    live.sort((a, b) => a._k - b._k || a._t - b._t || a.origPos - b.origPos);
+    const base = live.length && live[0]._k === 0 ? live[0]._t : 0;
+    live.forEach((r, i) => {
+      r.pos = i + 1;
+      if (r._k === 0) r.gap = fmtGap(r._t - base);
+      delete r._k; delete r._t;
+    });
+    if (live[0]) live[0].rtAdd = base;
+    // DSQ-rader beholder plass bak de som fullførte
+    rows.filter((r) => r.dq).forEach((r, i) => { r.origPos = r.pos; r.pos = live.length + i + 1; });
+  }
+
+  /** Beregner plass og poeng for ett løp. drivers: Map(normKey -> driver).
+      extra: straffer fra protestsaker [{key, t: "pts"|"time"|"DSQ", v, case}] */
+  function computeRace(result, league, drivers, extra) {
     const scale = league.scale || defaultScale();
     const half = result.half ? 0.5 : 1;
     const pen = result.pen || {};
     const d2on = !!(league.d2 && league.d2.enabled);
     const own = !(league.d2 && league.d2.ownPoints === false);
+    const ex = {};
+    (extra || []).forEach((x) => { if (x && x.key) (ex[x.key] = ex[x.key] || []).push(x); });
     const rows = (result.rows || []).map((r) => {
       const key = norm(r.name);
       const drv = drivers.get(key);
       const div = r.cls === 1 || r.cls === 2 ? r.cls : drv ? drv.div || 1 : 1;
       const p = pen[key] || null;
-      const dq = !!r.dq || (p && p.t === "DSQ");
-      const zero = !!(p && (p.t === "DNF" || p.t === "DNS" || p.t === "DSQ"));
-      const ded = p && p.t === "pts" ? +p.v || 0 : 0;
-      return { ...r, key, div, divSrc: r.cls === 1 || r.cls === 2 ? "fil" : drv ? "fører" : "standard", p, dq, zero, ded };
-    }).sort((a, b) => (a.dq - b.dq) || (a.pos - b.pos));
+      const pp = ex[key] || [];
+      const pdq = pp.some((x) => x.t === "DSQ");
+      const dq = !!r.dq || (p && p.t === "DSQ") || pdq;
+      const zero = !!(p && (p.t === "DNF" || p.t === "DNS" || p.t === "DSQ")) || pdq;
+      const ded = (p && p.t === "pts" ? +p.v || 0 : 0) + pp.filter((x) => x.t === "pts").reduce((s, x) => s + (+x.v || 0), 0);
+      const tpen = pp.filter((x) => x.t === "time").reduce((s, x) => s + (+x.v || 0), 0);
+      return { ...r, key, div, divSrc: r.cls === 1 || r.cls === 2 ? "fil" : drv ? "fører" : "standard", p, pp, dq, zero, ded, tpen };
+    });
+    applyTimePens(rows);
+    rows.sort((a, b) => (a.dq - b.dq) || (a.pos - b.pos));
     let c = 0, k = 0;
     for (const r of rows) {
       if (r.dq) { r.cpos = null; r.pts = 0; r.d2pos = null; r.d2pts = null; continue; }
@@ -218,14 +253,14 @@ const CORE = (() => {
   }
 
   /** mode: "all" eller "d2". results: {id: resultDoc} */
-  function computeStandings(league, results, driverList, mode) {
+  function computeStandings(league, results, driverList, mode, extraByRid) {
     const drivers = new Map(driverList.map((d) => [norm(d.name), d]));
     const keys = raceKeys(league);
     const table = new Map();
     for (const k of keys) {
       const res = results[k.id];
       if (!res) continue;
-      for (const r of computeRace(res, league, drivers)) {
+      for (const r of computeRace(res, league, drivers, extraByRid && extraByRid[k.id])) {
         const pts = mode === "d2" ? r.d2pts : r.pts;
         const rank = mode === "d2" ? r.d2pos : r.cpos;
         if (mode === "d2" && r.d2pos == null && !(r.dq && r.div === 2)) continue;
@@ -233,7 +268,7 @@ const CORE = (() => {
           const drv = drivers.get(r.key);
           table.set(r.key, { key: r.key, name: drv ? drv.name : r.name, num: drv && drv.num ? drv.num : r.num, div: drv ? drv.div : r.div, cells: {} });
         }
-        table.get(r.key).cells[k.id] = { pts: r.dq ? 0 : pts ?? 0, rank, dq: r.dq, zero: r.zero };
+        table.get(r.key).cells[k.id] = { pts: r.dq ? 0 : pts ?? 0, rank, dq: r.dq, zero: r.zero, pp: r.pp };
       }
     }
     const best = +league.bestOf || 0;
@@ -271,7 +306,41 @@ const CORE = (() => {
     };
   }
 
+  /** Standardoppsett for protester (ligger i league.protests) */
+  function protestDefaults(p) {
+    return {
+      enabled: false, deadlineH: 48, appealH: 48, perRound: 2, video: "req",
+      kinds: ["Kontakt / dytting", "Blokkering", "Utrygg retur til banen", "Ignorerte blått flagg", "Kutting / banegrenser", "Usportslig oppførsel", "Annet"],
+      ...(p || {}),
+    };
+  }
+
+  /** Straffer fra avgjorte protestsaker som skal legges inn i resultatet, gruppert per løp (rid).
+      driverName(id) gir førerens navn i dag (navnet kan være endret siden protesten ble sendt inn). */
+  function protestPens(protests, driverName) {
+    const out = {};
+    (protests || []).forEach((p) => {
+      const d = p.decision;
+      if (!d || d.outcome !== "pen" || !d.apply || !d.pen || !["decided", "closed"].includes(p.status)) return;
+      if (!["pts", "time", "DSQ"].includes(d.pen.t)) return;
+      const name = (driverName && driverName(d.driver)) || d.driverName;
+      if (!name) return;
+      const rid = "r" + p.round + "-" + p.race;
+      (out[rid] = out[rid] || []).push({ key: norm(name), t: d.pen.t, v: +d.pen.v || 0, case: p.no });
+    });
+    return out;
+  }
+
+  /** Protestfrist: midnatt etter rundedatoen + deadlineH timer. Uten dato: ingen frist (null). */
+  function protestDeadline(league, round) {
+    const cfg = protestDefaults(league.protests);
+    const d = ((league.rounds || [])[round - 1] || {}).date;
+    if (!d || !/^\d{4}-\d{2}-\d{2}$/.test(d)) return null;
+    const [y, m, dd] = d.split("-").map(Number);
+    return new Date(y, m - 1, dd + 1, 0, 0, 0).getTime() + (+cfg.deadlineH || 0) * 3600000;
+  }
+
   return { defaultScale, norm, parseCSVText, parseCSV, parseJSON, parseFile, computeRace, computeStandings, raceKeys,
-           cslTemplate, fmtGap, fmtLap, fmtTime, secs, isDQ };
+           cslTemplate, fmtGap, fmtLap, fmtTime, secs, isDQ, protestDefaults, protestPens, protestDeadline };
 })();
 if (typeof module !== "undefined") module.exports = CORE;

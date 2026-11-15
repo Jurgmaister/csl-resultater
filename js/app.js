@@ -6,6 +6,9 @@
     tab: "standings", stMode: "all", resMode: "all", sel: null,
     imp: { round: 1, race: null, parsed: null, file: "", err: "", paste: false, busy: false },
     draft: null, draftFor: null, confirm: null, newLeague: false, q: "", pending: false, busy: "",
+    // protester: protests = null betyr at tabellene ikke finnes i databasen ennå
+    protests: null, pevents: [], canSteward: false, myLink: null, links: null, stewards: null, quota: {},
+    pv: { mode: "list", id: null, f: { rid: "", no: "", drv: "", st: "" } }, pf: null, dec: null, reply: null,
   };
   const $ = (s, r = document) => r.querySelector(s);
   const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -52,14 +55,30 @@
         if (table === "leagues") { S.leagues = await DATA.loadLeagues(); if (!league()) pickLeague(); else softRender(); }
         else if (S.lid && table === "drivers") { S.drivers = await DATA.loadDrivers(S.lid); softRender(); }
         else if (S.lid && table === "results") { S.results = await DATA.loadResults(S.lid); softRender(); }
+        else if (S.lid && table === "protests") { await loadProtestData(S.lid); softRender(); }
+        else if (S.lid && table === "links") { await loadLinks(S.lid); softRender(); }
       } catch (e) {}
     }, 250);
   }
 
+  async function loadProtestData(lid) {
+    const [p, ev] = await Promise.all([DATA.loadProtests(lid), DATA.loadEvents(lid)]);
+    if (S.lid !== lid) return;
+    S.protests = p; S.pevents = ev; S.quota = {};
+  }
+  async function loadLinks(lid) {
+    const me = S.session ? await DATA.myLink(lid) : null;
+    if (S.lid !== lid) return;
+    S.myLink = me; S.quota = {};
+    if (S.canWrite) S.links = await DATA.listLinks(lid);
+  }
+
   async function checkAdmin() {
     S.canWrite = S.session ? await DATA.isAdmin() : false;
-    S.admins = null;
+    S.canSteward = S.session ? await DATA.isSteward() : false;
+    S.admins = null; S.stewards = null; S.links = null;
     if (!S.canWrite && ["import", "setup"].includes(S.tab)) S.tab = "standings";
+    if (S.lid) { try { await Promise.all([loadLinks(S.lid), loadProtestData(S.lid)]); } catch (e) {} }
     render();
   }
 
@@ -82,7 +101,7 @@
     S.db = DATA.db;
     try {
       const { data } = await sb.auth.getSession(); S.session = data.session;
-      if (S.session) S.canWrite = await DATA.isAdmin();
+      if (S.session) { S.canWrite = await DATA.isAdmin(); S.canSteward = await DATA.isSteward(); }
       S.leagues = await DATA.loadLeagues();
     } catch (e) { clearTimeout(slowT); S.ready = true; S.err = "Ligadataene kan ikke leses akkurat nå (" + (e.message || e.code) + ")."; render(); return; }
     clearTimeout(slowT); S.slow = false; S.ready = true;
@@ -96,12 +115,15 @@
       .on("postgres_changes", { event: "*", schema: "public", table: "leagues" }, () => scheduleReload("leagues"))
       .on("postgres_changes", { event: "*", schema: "public", table: "drivers" }, () => scheduleReload("drivers"))
       .on("postgres_changes", { event: "*", schema: "public", table: "results" }, () => scheduleReload("results"))
+      .on("postgres_changes", { event: "*", schema: "public", table: "protests" }, () => scheduleReload("protests"))
+      .on("postgres_changes", { event: "*", schema: "public", table: "protest_events" }, () => scheduleReload("protests"))
       .subscribe();
     pickLeague();
   }
 
   async function selectLeague(id) {
     S.lid = id; S.drivers = []; S.results = {}; S.sel = null; S.draft = null; S.imp.parsed = null; S.confirm = null;
+    S.protests = null; S.pevents = []; S.myLink = null; S.links = null; S.quota = {}; S.pv = { mode: "list", id: null, f: { rid: "", no: "", drv: "", st: "" } }; S.pf = null; S.dec = null; S.reply = null;
     if (id) store.set("csl.lid", id);
     render();
     if (id) {
@@ -110,6 +132,7 @@
         if (S.lid !== id) return;
         S.drivers = d; S.results = r; render();
       } catch (e) { toast("Kunne ikke hente ligaen: " + (e.message || ""), "err"); }
+      try { await Promise.all([loadProtestData(id), loadLinks(id)]); if (S.lid === id) render(); } catch (e) {}
     }
   }
 
@@ -132,7 +155,8 @@
     if (S.login) { v.innerHTML = viewLogin(); return; }
     if (S.err) { v.innerHTML = `<div class="empty"><h2>Noe gikk galt</h2><p class="muted">${esc(S.err)}</p></div>`; return; }
     if (!L || S.newLeague) { v.innerHTML = viewNewLeague(); return; }
-    const fn = { standings: viewStandings, results: viewResults, import: viewImport, drivers: viewDrivers, setup: viewSetup }[S.tab];
+    if (S.tab === "protests" && !protestsOn(L)) S.tab = "standings";
+    const fn = { standings: viewStandings, results: viewResults, protests: viewProtests, import: viewImport, drivers: viewDrivers, setup: viewSetup }[S.tab];
     v.innerHTML = fn(L);
     if (S.tab === "import") bindDrop();
   }
@@ -143,8 +167,10 @@
     $("#leaguebar").innerHTML = S.leagues.length
       ? `<label class="sr" for="leagueSel">Liga</label><select id="leagueSel" data-chg="league">${opts}</select>
          ${S.canWrite ? `<button class="btn ghost sm" data-act="newLeague">+ Ny liga</button>` : ""}` : "";
-    const tabs = [["standings", "Standings"], ["results", "Resultater"], ["import", "Importer"], ["drivers", "Førere"], ["setup", "Oppsett"]]
-      .filter(([k]) => S.canWrite || !["import", "setup"].includes(k));
+    const nOpen = L && protestsOn(L) ? S.protests.filter(isOpen).length : 0;
+    const tabs = [["standings", "Standings"], ["results", "Resultater"], ["protests", "Protester" + (nOpen ? ` <span class="tabn">${nOpen}</span>` : "")], ["import", "Importer"], ["drivers", "Førere"], ["setup", "Oppsett"]]
+      .filter(([k]) => S.canWrite || !["import", "setup"].includes(k))
+      .filter(([k]) => k !== "protests" || (L && protestsOn(L)));
     $("#tabs").innerHTML = L && !S.newLeague ? tabs.map(([k, t]) => `<button class="tab ${S.tab === k ? "on" : ""}" data-act="tab" data-v="${k}" aria-current="${S.tab === k ? "page" : "false"}">${t}</button>`).join("") : "";
     const em = S.session && S.session.user && S.session.user.email;
     $("#account").innerHTML = S.sb ? (em ? `<span class="who" title="${esc(em)}">${esc(em)}</span><button class="btn ghost sm" data-act="logout">Logg ut</button>`
@@ -153,7 +179,9 @@
     ro.hidden = S.canWrite || !S.ready || !!S.err || S.login;
     if (!ro.hidden) ro.innerHTML = `<div class="wrap">${em
       ? `Du er logget inn som ${esc(em)}, men er ikke lagt til som arrangør. Be en arrangør legge deg til under Oppsett → Arrangører.`
+      : L && protestsOn(L) ? `Du ser resultatene uten å være logget inn. <button class="linkbtn inv" data-act="login">Logg inn</button> for å sende inn protester (førere) eller importere og redigere (arrangører).`
       : `Du ser resultatene uten å være logget inn. Arrangører <button class="linkbtn inv" data-act="login">logger inn</button> for å importere og redigere.`}</div>`;
+    if (!ro.hidden && em && (S.canSteward || S.myLink || (L && protestsOn(L)))) ro.hidden = true;
   }
 
   /* ---------------- innlogging ---------------- */
@@ -169,7 +197,7 @@
       <form data-form="newpw" class="stack"><label class="fld"><span>Nytt passord (minst 8 tegn)</span><input id="pw1" type="password" required minlength="8" autocomplete="new-password" /></label>
       <label class="fld"><span>Gjenta passordet</span><input id="pw2" type="password" required minlength="8" autocomplete="new-password" /></label>
       <div class="row"><button class="btn primary" type="submit" ${busy}>Lagre passord</button></div></form>`;
-    else if (m === "up") body = `<p class="muted">Første gang? Lag et passord for e-postadressen din. Du kan importere og redigere når en arrangør har lagt deg til under Oppsett → Arrangører.</p>
+    else if (m === "up") body = `<p class="muted">Første gang? Lag et passord for e-postadressen din. Førere kobler deretter kontoen til seg selv under Protester. Arrangører og stewards får tilgang når en arrangør har lagt dem til under Oppsett.</p>
       <form data-form="signup" class="stack">${email}
       <label class="fld"><span>Velg passord (minst 8 tegn)</span><input id="pw1" type="password" required minlength="8" autocomplete="new-password" /></label>
       <label class="fld"><span>Gjenta passordet</span><input id="pw2" type="password" required minlength="8" autocomplete="new-password" /></label>
@@ -178,11 +206,11 @@
     else if (m === "forgot") body = `<p class="muted">Skriv e-postadressen din, så sender vi en lenke der du kan velge nytt passord.</p>
       <form data-form="forgot" class="stack">${email}<div class="row"><button class="btn primary" type="submit" ${busy}>Send lenke</button>
       <button class="btn ghost" type="button" data-act="loginMode" data-v="in">Tilbake</button></div></form>`;
-    else body = `<p class="muted">For arrangører. Alle andre kan se standings og resultater uten å logge inn.</p>
+    else body = `<p class="muted">For arrangører, stewards og førere som vil sende inn protester. Alle kan se standings, resultater og avgjørelser uten å logge inn.</p>
       <form data-form="login" class="stack">${email}
       <label class="fld"><span>Passord</span><input id="loginPw" type="password" required autocomplete="current-password" /></label>
       <div class="row"><button class="btn primary" type="submit" ${busy}>Logg inn</button>${cancel}</div></form>
-      <p class="small"><button class="linkbtn" data-act="loginMode" data-v="up">Ny arrangør? Lag passord</button> · <button class="linkbtn" data-act="loginMode" data-v="forgot">Glemt passord?</button></p>`;
+      <p class="small"><button class="linkbtn" data-act="loginMode" data-v="up">Første gang? Lag passord</button> ·<button class="linkbtn" data-act="loginMode" data-v="forgot">Glemt passord?</button></p>`;
     const title = { up: "Lag passord", forgot: "Glemt passord", sent: "Sjekk e-posten", newpw: "Nytt passord" }[m] || "Logg inn";
     return `<section class="panel narrow"><h2>${title}</h2>${body}</section>`;
   }
@@ -204,7 +232,7 @@
 
   /* ---------------- standings ---------------- */
   function standingsModel(L, mode) {
-    const st = CORE.computeStandings(L, S.results, S.drivers, mode);
+    const st = CORE.computeStandings(L, S.results, S.drivers, mode, pensByRid());
     const keys = st.keys;
     const columns = [{ label: "Pos", w: 44, align: "c", bold: true }, { label: "Driver", w: 210, align: "l", bold: true }];
     if (mode === "all" && L.d2 && L.d2.enabled) columns.push({ label: "Div", w: 40, align: "c" });
@@ -253,16 +281,35 @@
     const thG = (L.rounds || []).map((rd, i) => `<th colspan="${nRace}" class="grp">${esc(rd.track || "Runde " + (i + 1))}</th>`).join("");
     const thR = keys.map((k) => `<th class="num">${esc(k.label)}</th>`).join("");
     const divCol = mode === "all" && L.d2 && L.d2.enabled;
-    const body = m.st.rows.map((r) => `<tr>
+    const pOn = protestsOn(L);
+    const open = pOn ? S.protests.filter(isOpen) : [];
+    const decided = pOn ? S.protests.filter((p) => isDone(p) && p.decision && ["pen", "warn"].includes(p.decision.outcome)) : [];
+    const penCount = (key) => decided.filter((p) => CORE.norm(decDriverName(p)) === key);
+    const body = m.st.rows.map((r) => {
+      const pc = penCount(r.key);
+      const nPen = pc.filter((p) => p.decision.outcome === "pen").length, nWarn = pc.length - nPen;
+      return `<tr>
         <td class="pos">${r.pos}</td><td class="name">${esc(r.name)}</td>${divCol ? `<td class="num"><span class="div d${r.div || 1}">${r.div || 1}</span></td>` : ""}
         ${keys.map((k) => { const c = r.cells[k.id]; if (!c) return `<td class="num"></td>`;
-          const cls = [c.dq ? "dsq" : c.rank <= 3 ? "p" + c.rank : "", c.dropped ? "drop" : ""].join(" ");
-          return `<td class="num ${cls}" title="${c.dq ? "Diskvalifisert" : c.rank ? c.rank + ". plass" : ""}">${c.dq ? "DSQ" : fmtPts(c.pts)}</td>`; }).join("")}
-        <td class="num tot">${fmtPts(r.total)}</td></tr>`).join("");
-    return head + `<div class="tablewrap"><table class="grid st">
-      <thead><tr><th rowspan="2" class="pos">Pos</th><th rowspan="2">Fører</th>${divCol ? `<th rowspan="2" class="num">Div</th>` : ""}${thG}<th rowspan="2" class="num">Total</th></tr><tr>${thR}</tr></thead>
+          const pp = c.pp || [];
+          const op = open.filter((p) => p.round + "" === k.round + "" && p.race === k.race && CORE.norm(driverName(p.against_driver, p.against_name)) === r.key);
+          const cls = [c.dq ? "dsq" : c.rank <= 3 ? "p" + c.rank : "", c.dropped ? "drop" : "", pp.length ? "cellmark" : "", op.length ? "cellopen" : ""].join(" ");
+          const tip = [c.dq ? "Diskvalifisert" : c.rank ? c.rank + ". plass" : "", ...pp.map((x) => penShort(x) + " · Sak #" + x.case), ...op.map((p) => "Protest til behandling · Sak #" + p.no)].filter(Boolean).join("\n");
+          const inner = c.dq ? "DSQ" : fmtPts(c.pts);
+          const caseNo = pp.length ? pp[0].case : op.length ? op[0].no : null;
+          return `<td class="num ${cls}" title="${esc(tip)}">${caseNo ? `<button class="cellbtn" data-act="openCase" data-no="${caseNo}" aria-label="${esc(tip)}">${inner}</button>` : inner}</td>`; }).join("")}
+        ${pOn ? `<td class="num">${pc.length ? `<button class="linkbtn sm" data-act="pFilterDrv" data-name="${esc(r.name)}" title="${nPen} straff, ${nWarn} advarsel">${nPen ? nPen : ""}${nWarn ? ` <span class="badge">${nWarn} adv.</span>` : ""}</button>` : `<span class="muted">–</span>`}</td>` : ""}
+        <td class="num tot">${fmtPts(r.total)}</td></tr>`; }).join("");
+    const banner = open.length ? `<div class="status prov"><b>Foreløpig</b><span>${open.length === 1 ? "1 protest er" : open.length + " protester er"} til behandling (${open.map((p) => caseLink(p.no)).join(", ")}). Standings blir endelige når sakene er avgjort.</span></div>` : "";
+    const seasonTab = decided.length ? `<section class="panel" style="margin-top:14px"><div class="viewhead" style="margin-bottom:6px"><h3 style="margin:0">Straffer og advarsler i sesongen</h3><span class="muted small">Alle avgjørelser med lenke til saken</span></div>
+      <div class="tablewrap"><table class="grid pentab"><thead><tr><th>Løp</th><th>Sak</th><th>Fører</th><th>Straff</th><th>Hendelse</th><th>Avgjort</th></tr></thead><tbody>
+      ${decided.slice().sort((a, b) => b.round - a.round || b.no - a.no).map((p) => `<tr><td>R${p.round} ${esc(raceLabel(L, p.race))}</td><td>${caseLink(p.no, "#" + p.no)}</td>
+        <td class="name">${esc(decDriverName(p))}</td><td>${outcomePill(p.decision)}${p.decision.outcome === "pen" && !p.decision.apply ? ` <span class="muted small">ikke i resultatet</span>` : ""}</td>
+        <td class="muted">${esc(p.kind || "")}</td><td class="muted">${fmtDate(p.decision.at)}</td></tr>`).join("")}</tbody></table></div></section>` : "";
+    return head + banner + `<div class="tablewrap"><table class="grid st">
+      <thead><tr><th rowspan="2" class="pos">Pos</th><th rowspan="2">Fører</th>${divCol ? `<th rowspan="2" class="num">Div</th>` : ""}${thG}${pOn ? `<th rowspan="2" class="num" title="Straffer og advarsler fra protestsaker">Straff</th>` : ""}<th rowspan="2" class="num">Total</th></tr><tr>${thR}</tr></thead>
       <tbody>${body}</tbody></table></div>
-      <p class="legend"><span class="sw p1"></span>1. plass <span class="sw p2"></span>2. plass <span class="sw p3"></span>3. plass i løpet${+L.bestOf ? ` <span class="drop">00</span> ikke tellende` : ""}</p>`;
+      <p class="legend"><span class="sw p1"></span>1. plass <span class="sw p2"></span>2. plass <span class="sw p3"></span>3. plass i løpet${+L.bestOf ? ` <span class="drop">00</span> ikke tellende` : ""}${pOn ? ` · <span class="cellmark demo">00</span> poeng endret av straff (trykk for sak) · <span class="cellopen demo">00</span> protest til behandling` : ""}</p>${seasonTab}`;
   }
 
   function exportBar(kind) {
@@ -275,7 +322,7 @@
 
   /* ---------------- resultater ---------------- */
   function raceModel(L, res, mode) {
-    const rows = CORE.computeRace(res, L, driverMap());
+    const rows = CORE.computeRace(res, L, driverMap(), pensByRid()[res.id]);
     const d2on = L.d2 && L.d2.enabled;
     const d2n = (L.d2 && L.d2.name) || "Division 2";
     const list = mode === "d2" ? rows.filter((r) => r.d2pos != null || (r.dq && r.div === 2)) : rows;
@@ -290,7 +337,7 @@
     const out = [], styles = [], gap = gapFn(rows, mode, res);
     list.forEach((r) => {
       const pos = mode === "d2" ? (r.dq ? "DSQ" : r.d2pos) : r.dq ? "DSQ" : r.cpos;
-      const pen = r.p ? (r.p.t === "pts" ? "-" + fmtPts(r.p.v) : r.p.t) : 0;
+      const pen = penText(r) || 0;
       const row = mode === "d2" ? [pos, r.dq ? "" : r.cpos] : [pos];
       row.push(r.num, r.name);
       if (mode === "all" && d2on) row.push(r.div);
@@ -313,7 +360,10 @@
     const T = +res.raceTime || 0;
     return (r) => {
       if (r.dq && !/L$/.test(r.gap)) return r.out;
-      if (r === leader) return T && lg != null ? CORE.fmtTime(T + lg) : r.gap;
+      if (r === leader) {
+        const add = (rows.find((x) => x.cpos === 1) || {}).rtAdd || 0; // tidsstraff kan gi ny vinner med lengre tid
+        return T && lg != null ? CORE.fmtTime(T + add + lg) : r.gap;
+      }
       if (mode === "d2" && lg) { const g = CORE.secs(r.gap); if (g != null) return CORE.fmtGap(Math.max(0, g - lg)); }
       return r.gap;
     };
@@ -348,26 +398,39 @@
       <div class="tools">${d2on ? `<div class="seg"><button class="${mode === "all" ? "on" : ""}" data-act="resMode" data-v="all">Totalt</button><button class="${mode === "d2" ? "on" : ""}" data-act="resMode" data-v="d2">${esc(d2n)}</button></div>` : ""}${exportBar("race")}</div></div>`;
     const list = mode === "d2" ? m.rows.filter((r) => r.d2pos != null || (r.dq && r.div === 2)) : m.rows;
     const gap = gapFn(m.rows, mode, res);
+    const pOn = protestsOn(L);
+    const open = pOn ? S.protests.filter((p) => isOpen(p) && "r" + p.round + "-" + p.race === res.id) : [];
     const body = list.map((r) => {
       const pos = mode === "d2" ? (r.dq ? "DSQ" : r.d2pos) : r.dq ? "DSQ" : r.cpos;
       const rk = mode === "d2" ? r.d2pos : r.cpos;
       const pts = mode === "d2" ? r.d2pts ?? 0 : r.pts;
-      return `<tr class="${r.dq ? "isdq" : ""}"><td class="pos ${!r.dq && rk <= 3 ? "p" + rk : ""}">${pos}</td>
+      const mv = r.origPos && r.origPos !== r.pos && !r.dq ? (r.pos < r.origPos ? `<span class="mv up" title="Opp ${r.origPos - r.pos} plass(er) etter straff">▲${r.origPos - r.pos}</span>` : `<span class="mv dn" title="Ned ${r.pos - r.origPos} plass(er) etter straff">▼${r.pos - r.origPos}</span>`) : "";
+      const op = open.filter((p) => CORE.norm(driverName(p.against_driver, p.against_name)) === r.key).map((p) => `<button class="openpill" data-act="openCase" data-no="${p.no}" title="Protest til behandling mot føreren">Protest #${p.no}</button>`).join("");
+      return `<tr class="${r.dq ? "isdq" : ""} ${r.pp && r.pp.length ? "hadpen" : ""}"><td class="pos ${!r.dq && rk <= 3 ? "p" + rk : ""}">${pos}</td>
         ${mode === "d2" ? `<td class="num muted">${r.dq ? "" : r.cpos}</td>` : ""}
-        <td class="num">${esc(r.num)}</td><td class="name">${esc(r.name)}</td>
+        <td class="num">${esc(r.num)}</td><td class="name">${esc(r.name)}${mv}${op}</td>
         ${mode === "all" && d2on ? `<td class="num"><span class="div d${r.div}" title="Divisjon fra ${r.divSrc}">${r.div}</span></td>` : ""}
-        <td class="car">${esc(r.car)}</td><td class="num">${r.start ?? ""}</td><td class="num mono ${(mode === "d2" ? r.d2pos : r.cpos) === 1 && res.raceTime ? "rtime" : ""}">${esc(gap(r))}</td>
+        <td class="car">${esc(r.car)}</td><td class="num">${r.start ?? ""}</td><td class="num mono ${(mode === "d2" ? r.d2pos : r.cpos) === 1 && res.raceTime ? "rtime" : ""}">${esc(gap(r))}${r.tpen && !r.dq ? ` <span class="muted small">(inkl. ${fmtPts(r.tpen)} s)</span>` : ""}</td>
         <td class="num">${r.led}</td><td class="num mono">${esc(r.best)}</td><td class="num">${r.laps}</td><td class="num">${r.inc}</td>
-        <td class="num tot">${fmtPts(pts)}</td><td class="pen">${penCell(r)}</td></tr>`;
+        <td class="num tot">${fmtPts(pts)}</td><td class="pen">${(r.pp || []).map((x) => `<span class="penpill">${esc(penShort(x))}</span> ${caseLink(x.case, "Sak #" + x.case)}`).join(" ")}${penCell(r)}</td></tr>`;
     }).join("");
     const nDq = m.rows.filter((r) => r.dq).length, n2 = m.rows.filter((r) => r.div === 2).length;
-    return head + picker + `<div class="bar">${ctrl}<span class="muted small">${m.rows.length} førere · ${n2} i ${esc(d2n)}${nDq ? " · " + nDq + " DSQ" : ""}</span></div>
+    const dl = pOn ? CORE.protestDeadline(L, res.round) : null;
+    const banner = open.length || (pOn && protestCfg(L).enabled && dl && Date.now() < dl)
+      ? `<div class="status prov"><b>Foreløpig resultat</b><span>${open.length ? `${open.length === 1 ? "1 protest er" : open.length + " protester er"} til behandling i dette løpet: ${open.map((p) => caseLink(p.no, "Sak #" + p.no)).join(", ")}. Plasseringer og poeng kan endres.` : "Protestfristen er ikke ute ennå."}</span>${dl ? `<span class="grow muted small">Protestfrist: ${fmtDate(dl, true)}</span>` : ""}</div>` : "";
+    const raceCases = pOn ? S.protests.filter((p) => isDone(p) && p.decision && ["pen", "warn"].includes(p.decision.outcome) && "r" + p.round + "-" + p.race === res.id) : [];
+    const penList = raceCases.length ? `<section class="panel" style="margin-top:14px"><h3>Straffer i dette løpet</h3><div class="tablewrap"><table class="grid pentab"><thead><tr><th>Sak</th><th>Fører</th><th>Hendelse</th><th>Straff</th><th>Effekt</th></tr></thead><tbody>
+      ${raceCases.map((p) => { const r = m.rows.find((x) => x.key === CORE.norm(decDriverName(p)));
+        const eff = p.decision.outcome !== "pen" ? "Ingen endring" : !p.decision.apply ? "Ikke lagt inn i resultatet" : r ? (r.dq ? "Diskvalifisert, 0 poeng" : (r.origPos && r.origPos !== r.pos ? `${r.origPos}. → ${r.pos}. plass · ` : "") + fmtPts(r.pts) + " poeng") : "";
+        return `<tr><td>${caseLink(p.no, "#" + p.no)}</td><td class="name">${esc(decDriverName(p))}</td><td class="muted">${p.lap ? "Runde " + p.lap + " · " : ""}${esc(p.kind || "")}</td><td>${outcomePill(p.decision)}</td><td class="muted">${esc(eff)}</td></tr>`; }).join("")}
+      </tbody></table></div></section>` : "";
+    return head + picker + banner + `<div class="bar">${ctrl}<span class="muted small">${m.rows.length} førere · ${n2} i ${esc(d2n)}${nDq ? " · " + nDq + " DSQ" : ""}</span></div>
       <div class="tablewrap"><table class="grid res"><thead><tr>
         <th class="pos">${mode === "d2" ? "Pos" : "Pos"}</th>${mode === "d2" ? `<th class="num">Totalt</th>` : ""}<th class="num">#</th><th>Fører</th>
         ${mode === "all" && d2on ? `<th class="num">Div</th>` : ""}<th>Bil</th><th class="num">Start</th><th class="num">Gap</th><th class="num">Ledet</th>
         <th class="num">Beste runde</th><th class="num">Runder</th><th class="num">Inc</th><th class="num">Poeng</th><th>Straff</th></tr></thead>
         <tbody>${body}</tbody></table></div>
-      <p class="legend">Straff: poengtrekk trekkes fra løpets poeng. DNF, DNS og DSQ gir 0 poeng. DSQ flytter de bak opp en plass. Status DQ i filen gir 0 poeng automatisk.</p>`;
+      <p class="legend">Straff: poengtrekk trekkes fra løpets poeng. DNF, DNS og DSQ gir 0 poeng. DSQ flytter de bak opp en plass. Status DQ i filen gir 0 poeng automatisk.${pOn ? " Straffer med saksnummer kommer fra protestsaker og endres ved å endre avgjørelsen." : ""}</p>${penList}`;
   }
 
   function penCell(r) {
@@ -377,6 +440,305 @@
     const o = (v, l) => `<option value="${v}" ${t === v ? "selected" : ""}>${l}</option>`;
     return `<div class="penbox"><select data-chg="penT" data-key="${esc(r.key)}" aria-label="Straff for ${esc(r.name)}">${o("", "–")}${o("pts", "Poengtrekk")}${o("DNF", "DNF")}${o("DNS", "DNS")}${o("DSQ", "DSQ")}</select>
       ${t === "pts" ? `<input type="number" min="0" step="1" value="${esc(p.v || 0)}" data-chg="penV" data-key="${esc(r.key)}" aria-label="Poengtrekk" />` : ""}</div>`;
+  }
+
+  /* ---------------- protester: hjelpere ---------------- */
+  const protestCfg = (L) => CORE.protestDefaults(L && L.protests);
+  const protestsOn = (L) => Array.isArray(S.protests) && (protestCfg(L).enabled || S.protests.length > 0);
+  const isOpen = (p) => ["submitted", "review", "appealed"].includes(p.status);
+  const isDone = (p) => ["decided", "closed"].includes(p.status);
+  const driverById = (id) => S.drivers.find((d) => d.id === id) || null;
+  const driverName = (id, fallback) => { const d = id && driverById(id); return d ? d.name : fallback || ""; };
+  const driverNum = (id) => { const d = id && driverById(id); return d && d.num ? d.num : ""; };
+  const decDriverName = (p) => driverName(p.decision && p.decision.driver, p.decision && p.decision.driverName);
+  function pensByRid() { return Array.isArray(S.protests) ? CORE.protestPens(S.protests, (id) => driverName(id, "")) : {}; }
+  const caseLink = (no, label) => `<button class="caselink" data-act="openCase" data-no="${no}">${esc(label || "#" + no)}</button>`;
+  const safeUrl = (u) => (/^https?:\/\//i.test(String(u || "").trim()) ? String(u).trim() : "");
+  function fmtDate(v, withDay) {
+    if (!v) return "";
+    const d = new Date(v); if (isNaN(d)) return "";
+    return d.toLocaleString("nb-NO", withDay ? { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" } : { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  }
+  function penShort(x) {
+    if (!x) return "";
+    if (x.t === "pts") return "−" + fmtPts(x.v) + " p";
+    if (x.t === "time") return "+" + fmtPts(x.v) + " s";
+    return x.t;
+  }
+  function penText(r) {
+    const parts = (r.pp || []).map(penShort);
+    if (r.p) parts.push(r.p.t === "pts" ? "-" + fmtPts(r.p.v) : r.p.t);
+    return parts.join(", ");
+  }
+  function penLong(pen) {
+    if (!pen) return "";
+    if (pen.t === "pts") return fmtPts(pen.v) + " poeng trekk";
+    if (pen.t === "time") return fmtPts(pen.v) + " sekunder tidsstraff";
+    if (pen.t === "DSQ") return "Diskvalifisert fra løpet";
+    return pen.t;
+  }
+  const OUTCOME = { nfa: "Ingen videre handling", warn: "Advarsel", pen: "Straff", rejected: "Avvist" };
+  function outcomeText(d) { if (!d) return ""; return d.outcome === "pen" ? "Straff · " + penLong(d.pen) : OUTCOME[d.outcome] || ""; }
+  function outcomePill(d) {
+    if (!d) return "";
+    if (d.outcome === "pen") return `<span class="penpill">${esc(penShort(d.pen))}</span>`;
+    return `<span class="badge ${d.outcome === "nfa" ? "nfa" : ""}">${esc(OUTCOME[d.outcome] || "")}</span>`;
+  }
+  function statusBadge(p) {
+    if (p.status === "submitted") return `<span class="badge sub">Sendt inn</span>`;
+    if (p.status === "review") return `<span class="badge rev">Under behandling</span>`;
+    if (p.status === "appealed") return `<span class="badge app">Anket</span>`;
+    const d = p.decision;
+    if (!d) return `<span class="badge">Lukket</span>`;
+    if (d.outcome === "pen") return `<span class="badge pen">Straff</span>`;
+    if (d.outcome === "nfa") return `<span class="badge nfa">Ingen videre handling</span>`;
+    return `<span class="badge">${esc(OUTCOME[d.outcome] || "Lukket")}</span>`;
+  }
+  const myDriver = () => (S.myLink && S.myLink.approved ? S.myLink.driver_id : null);
+  const findCase = (no) => (S.protests || []).find((p) => p.no === +no) || null;
+  async function needQuota(L, round) {
+    if (!myDriver() || S.quota[round] != null || S.quota["_" + round]) return;
+    S.quota["_" + round] = true;
+    try { S.quota[round] = await DATA.quota(L.id, round); } catch (e) {} finally { delete S.quota["_" + round]; }
+    softRender();
+  }
+  const raceOpts = (L) => CORE.raceKeys(L).filter((k) => S.results[k.id]).map((k) => ({ ...k, name: `R${k.round} ${trackOf(L, k.round)} · ${raceLabel(L, k.race)}` }));
+  const embedUrl = (u) => {
+    let m = String(u).match(/(?:youtube\.com\/(?:watch\?(?:.*&)?v=|embed\/|shorts\/|live\/)|youtu\.be\/)([\w-]{11})/i);
+    if (m) return "https://www.youtube-nocookie.com/embed/" + m[1];
+    m = String(u).match(/streamable\.com\/(?:e\/)?([a-z0-9]+)/i);
+    if (m) return "https://streamable.com/e/" + m[1];
+    return "";
+  };
+  function videoBlock(u) {
+    const url = safeUrl(u); if (!url) return "";
+    const em = embedUrl(url);
+    return `${em ? `<div class="videobox"><iframe src="${esc(em)}" title="Video" loading="lazy" allow="fullscreen; picture-in-picture" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe></div>` : ""}
+      <p class="small"><a href="${esc(url)}" target="_blank" rel="noopener noreferrer nofollow">Åpne videoen i ny fane ↗</a></p>`;
+  }
+
+  /* ---------------- protester: visninger ---------------- */
+  function viewProtests(L) {
+    const pv = S.pv;
+    if (pv.mode === "new") return viewProtestForm(L);
+    const p = pv.id ? S.protests.find((x) => x.id === pv.id) : null;
+    if (pv.mode === "case" && p) return viewCase(L, p);
+    if (pv.mode === "decide" && p && S.canSteward) return viewDecide(L, p);
+    pv.mode = "list";
+    return viewProtestList(L);
+  }
+
+  function linkPanel(L) {
+    const cfg = protestCfg(L);
+    if (!cfg.enabled) return "";
+    if (!S.session) return `<div class="note"><b>Sende inn protest?</b><span>Førere <button class="linkbtn inv" data-act="login">logger inn</button> og kobler kontoen til seg selv i førerlisten. Alle kan lese sakene og avgjørelsene.</span></div>`;
+    if (S.myLink && S.myLink.approved) return "";
+    if (S.myLink) return `<div class="note"><b>Venter på godkjenning</b><span>Du har bedt om å bli koblet til <b>${esc(driverName(S.myLink.driver_id, "en fører"))}</b>. En arrangør må godkjenne før du kan sende inn protester.
+      <button class="linkbtn" data-act="cancelLink">Angre</button></span></div>`;
+    const opts = S.drivers.slice().sort((a, b) => a.name.localeCompare(b.name, "nb")).map((d) => `<option value="${esc(d.id)}">${d.num ? "#" + esc(d.num) + " " : ""}${esc(d.name)}</option>`).join("");
+    return `<form class="note linkform" data-form="reqLink"><b>Hvem er du?</b><span>Koble kontoen din til deg selv i førerlisten for å sende inn protester. En arrangør godkjenner koblingen.</span>
+      <select id="linkDrv" required aria-label="Velg deg selv"><option value="">Velg deg selv…</option>${opts}</select><button class="btn sm" type="submit">Be om kobling</button></form>`;
+  }
+
+  function caseCard(L, p) {
+    const by = driverName(p.by_driver, p.by_name), ag = driverName(p.against_driver, p.against_name);
+    const nb = driverNum(p.by_driver), na = driverNum(p.against_driver);
+    const d = p.decision;
+    const right = isOpen(p)
+      ? `<div><div class="lbl">Status</div>${statusBadge(p)}${p.status === "appealed" && d ? `<div class="small muted dec">Opprinnelig: ${esc(outcomeText(d))}</div>` : ""}</div>`
+      : `<div><div class="lbl">Avgjørelse</div>${statusBadge(p)}${d ? `<div class="dec">${esc(d.outcome === "pen" ? penShort(d.pen) + " · " + decDriverName(p) : d.outcome === "warn" ? "Advarsel · " + decDriverName(p) : d.outcome === "nfa" ? "Racinghendelse" : "")}</div>` : ""}</div>`;
+    return `<div class="case ${isOpen(p) ? "open" : ""}"><span class="no">Sak #${p.no}</span>
+      <div><div class="lbl">Sendt inn av</div><div class="drvn">${nb ? `<span class="n">#${esc(nb)}</span>` : ""}${esc(by)}</div></div>
+      <div><div class="lbl">Mot</div><div class="drvn">${na ? `<span class="n">#${esc(na)}</span>` : ""}${esc(ag)}</div></div>
+      <div><div class="lbl">Hendelse</div><div>R${p.round} ${esc(raceLabel(L, p.race))}${p.lap ? " · Runde " + p.lap : ""}</div><div class="muted small">${esc(p.kind || "")}</div></div>
+      ${right}
+      <div class="act"><button class="btn" data-act="openCase" data-no="${p.no}">Se detaljer</button></div></div>`;
+  }
+
+  function viewProtestList(L) {
+    const cfg = protestCfg(L), f = S.pv.f;
+    const keys = raceOpts(L);
+    let list = S.protests.slice();
+    if (f.rid) list = list.filter((p) => "r" + p.round + "-" + p.race === f.rid);
+    if (f.no) list = list.filter((p) => String(p.no) === String(f.no).replace("#", "").trim());
+    if (f.drv) list = list.filter((p) => [driverName(p.by_driver, p.by_name), driverName(p.against_driver, p.against_name)].some((n) => CORE.norm(n) === CORE.norm(f.drv)));
+    if (f.st === "open") list = list.filter(isOpen); else if (f.st === "done") list = list.filter((p) => !isOpen(p));
+    const open = list.filter(isOpen).sort((a, b) => b.no - a.no), done = list.filter((p) => !isOpen(p)).sort((a, b) => b.no - a.no);
+    const names = [...new Set(S.protests.flatMap((p) => [driverName(p.by_driver, p.by_name), driverName(p.against_driver, p.against_name)]))].filter(Boolean).sort((a, b) => a.localeCompare(b, "nb"));
+    const me = myDriver();
+    // frist og kvote for siste runde med resultat
+    let info = "";
+    const last = keys[keys.length - 1];
+    if (cfg.enabled && last) {
+      const dl = CORE.protestDeadline(L, last.round);
+      if (me) needQuota(L, last.round);
+      const q = S.quota[last.round];
+      info = `<div class="note"><b>Frist:</b><span>${dl ? (Date.now() < dl ? `Protester for R${last.round} ${esc(trackOf(L, last.round))} kan sendes inn til <b>${fmtDate(dl, true)}</b>.` : `Fristen for R${last.round} ${esc(trackOf(L, last.round))} gikk ut ${fmtDate(dl, true)}.`) : `Protester sendes inn senest ${cfg.deadlineH} timer etter løpsdagen.`}
+        ${me && q != null ? ` Du har <b>${q} av ${cfg.perRound}</b> protester igjen denne runden.` : ` Hver fører har ${cfg.perRound} protester per runde.`} En protest som fører fram, gis tilbake.</span></div>`;
+    }
+    const sel = (v, cur) => (String(v) === String(cur) ? "selected" : "");
+    return `<div class="viewhead"><div><h2>Protester</h2><p class="muted">Send inn hendelser, og følg stewardenes avgjørelser og anker. Alle kan lese sakene.</p></div></div>
+      <div class="filters">
+        <label class="fld"><span>Løp</span><select data-chg="pf.rid"><option value="">Alle løp</option>${keys.map((k) => `<option value="${k.id}" ${sel(k.id, f.rid)}>${esc(k.name)}</option>`).join("")}</select></label>
+        <label class="fld"><span>Sak #</span><input data-chg="pf.no" value="${esc(f.no)}" placeholder="f.eks. 12" style="width:100px" inputmode="numeric" /></label>
+        <label class="fld"><span>Fører</span><select data-chg="pf.drv"><option value="">Alle førere</option>${names.map((n) => `<option ${sel(n, f.drv)}>${esc(n)}</option>`).join("")}</select></label>
+        <label class="fld"><span>Status</span><select data-chg="pf.st"><option value="">Alle saker</option><option value="open" ${sel("open", f.st)}>Til behandling</option><option value="done" ${sel("done", f.st)}>Avgjort</option></select></label>
+        <div class="grow">${cfg.enabled && me ? `<button class="btn primary" data-act="newProtest">+ Send inn protest</button>` : ""}</div>
+      </div>
+      ${linkPanel(L)}${info}
+      ${!cfg.enabled ? `<div class="note"><b>Stengt</b><span>Ligaen tar ikke imot nye protester.${S.canWrite ? " Slå det på under Oppsett → Protester." : ""}</span></div>` : ""}
+      ${open.length ? `<div class="sechead open"><h3>Til behandling · ${open.length}</h3><span class="muted small">Venter på avgjørelse eller ankebehandling</span></div>${open.map((p) => caseCard(L, p)).join("")}` : ""}
+      ${done.length ? `<div class="sechead done"><h3>Avgjort · ${done.length}</h3></div>${done.map((p) => caseCard(L, p)).join("")}` : ""}
+      ${!list.length ? `<div class="empty"><h3>${S.protests.length ? "Ingen saker passer filteret" : "Ingen protester ennå"}</h3></div>` : ""}`;
+  }
+
+  function viewProtestForm(L) {
+    const cfg = protestCfg(L), me = myDriver();
+    if (!cfg.enabled || !me) { S.pv.mode = "list"; return viewProtestList(L); }
+    const keys = raceOpts(L);
+    if (!S.pf) { const last = keys[keys.length - 1]; S.pf = { rid: last ? last.id : "", against: "", kind: cfg.kinds[0] || "", lap: "", replay: "", place: "", descr: "", video: "" }; }
+    const F = S.pf, k = keys.find((x) => x.id === F.rid);
+    if (k) needQuota(L, k.round);
+    const q = k ? S.quota[k.round] : null;
+    const dl = k ? CORE.protestDeadline(L, k.round) : null;
+    const late = dl && Date.now() > dl;
+    const sel = (v, cur) => (String(v) === String(cur) ? "selected" : "");
+    // førere som var med i løpet først
+    const inRace = new Set(k && S.results[k.id] ? (S.results[k.id].rows || []).map((r) => CORE.norm(r.name)) : []);
+    const others = S.drivers.filter((d) => d.id !== me).sort((a, b) => (inRace.has(CORE.norm(b.name)) - inRace.has(CORE.norm(a.name))) || a.name.localeCompare(b.name, "nb"));
+    return `<section class="panel" style="max-width:900px">
+      <p class="small"><button class="linkbtn" data-act="pList">← Alle protester</button></p>
+      <h2>Send inn protest</h2>
+      <p class="muted small">En protest koster én av dine ${cfg.perRound} protester for runden. Svar på saker er gratis. Protester som fører fram, gis tilbake.${dl ? ` Frist: ${fmtDate(dl, true)}.` : ""}</p>
+      <form data-form="protest" class="formgrid" style="margin-top:10px">
+        <label class="fld s2"><span>Løp</span><select id="pfRid" data-chg="pform.rid" required>${keys.map((x) => `<option value="${x.id}" ${sel(x.id, F.rid)}>${esc(x.name)}</option>`).join("")}</select></label>
+        <label class="fld s2"><span>Hendelsestype</span><select id="pfKind" data-chg="pform.kind">${cfg.kinds.map((x) => `<option ${sel(x, F.kind)}>${esc(x)}</option>`).join("")}</select></label>
+        <label class="fld s2"><span>Du (innsender)</span><select disabled><option>${driverNum(me) ? "#" + esc(driverNum(me)) + " " : ""}${esc(driverName(me))}</option></select></label>
+        <label class="fld s2"><span>Protest mot</span><select id="pfAgainst" data-chg="pform.against" required><option value="">Velg fører…</option>${others.map((d) => `<option value="${esc(d.id)}" ${sel(d.id, F.against)}>${d.num ? "#" + esc(d.num) + " " : ""}${esc(d.name)}${k && !inRace.has(CORE.norm(d.name)) ? " (ikke i løpet)" : ""}</option>`).join("")}</select></label>
+        <label class="fld"><span>Runde</span><input id="pfLap" data-chg="pform.lap" type="number" min="0" max="999" value="${esc(F.lap)}" required /></label>
+        <label class="fld"><span>Replay-tid</span><input id="pfReplay" data-chg="pform.replay" class="mono" value="${esc(F.replay)}" placeholder="mm:ss" maxlength="20" required /></label>
+        <label class="fld s2"><span>Sving / sted (valgfritt)</span><input id="pfPlace" data-chg="pform.place" value="${esc(F.place)}" maxlength="80" /></label>
+        <div class="s4 quota"><span>Protester igjen denne runden: <b>${q == null ? "…" : q + " av " + cfg.perRound}</b></span><span>Runde og replay-tid finner du i iRacing-replayen (klokken nederst).</span></div>
+        <label class="fld s4"><span>Beskrivelse</span><textarea id="pfDescr" data-chg="pform.descr" maxlength="4000" required placeholder="Kort og saklig: hva skjedde, og hvem gjorde hva?">${esc(F.descr)}</textarea></label>
+        <label class="fld s4"><span>Video${cfg.video === "req" ? "" : " (valgfritt)"}</span><input id="pfVideo" data-chg="pform.video" type="url" value="${esc(F.video)}" placeholder="Lenke til YouTube, Streamable eller Google Drive" ${cfg.video === "req" ? "required" : ""} maxlength="500" />
+          <span class="hint">Må være en video som kan spilles av, ikke en iRacing-replayfil. Vis gjerne både cockpit og TV-kamera. Sett delingen til «alle med lenken».</span></label>
+        ${late ? `<p class="error s4">Protestfristen for dette løpet gikk ut ${fmtDate(dl, true)}.</p>` : ""}
+        ${q === 0 ? `<p class="error s4">Du har ingen protester igjen i denne runden.</p>` : ""}
+        <div class="row s4" style="justify-content:flex-end"><button class="btn ghost" type="button" data-act="pList">Avbryt</button><button class="btn primary" type="submit" ${late || q === 0 || S.busy === "protest" ? "disabled" : ""}>${S.busy === "protest" ? "Sender…" : "Send inn protest"}</button></div>
+      </form></section>`;
+  }
+
+  function viewCase(L, p) {
+    const cfg = protestCfg(L), me = myDriver();
+    const by = driverName(p.by_driver, p.by_name), ag = driverName(p.against_driver, p.against_name);
+    const nb = driverNum(p.by_driver), na = driverNum(p.against_driver);
+    const d = p.decision;
+    const party = me && (me === p.by_driver || me === p.against_driver);
+    const evs = S.pevents.filter((e) => e.protest_id === p.id);
+    const canAppeal = party && p.status === "decided" && p.appeal_until && Date.now() < new Date(p.appeal_until).getTime();
+    const canRespond = party && isOpen(p);
+    if (party) needQuota(L, p.round);
+    const R = S.reply && S.reply.id === p.id ? S.reply : null;
+    const kindName = { submitted: "Protest sendt inn", response: "Svar / nytt bevis", appeal: "Anke sendt inn", review: "Under behandling", decision: "Avgjørelse publisert", refund: "Protest gitt tilbake", closed: "Saken er lukket", reopened: "Saken er gjenåpnet", note: "Notat" };
+    const decBox = d ? `<div class="decision ${p.status === "appealed" ? "old" : ""}">
+        <h3>${p.status === "appealed" ? "Avgjørelse (anket)" : "Stewardenes avgjørelse"}</h3>
+        <div class="out">${esc(outcomeText(d))}</div>
+        <dl class="kv">${d.outcome === "pen" || d.outcome === "warn" ? `<dt>Gjelder</dt><dd>${esc(decDriverName(p))}</dd>` : ""}
+          ${d.rule ? `<dt>Regel</dt><dd>${esc(d.rule)}</dd>` : ""}
+          ${d.outcome === "pen" ? `<dt>Lagt inn i resultat</dt><dd>${d.apply ? (isDone(p) ? `Ja, R${p.round} ${esc(raceLabel(L, p.race))} – resultater og standings er oppdatert` : "Nei, ikke mens saken er åpen") : "Nei"}</dd>` : ""}
+          <dt>Utfall for innsender</dt><dd>${d.outcome === "pen" || d.outcome === "warn" ? "Protesten førte fram" : d.outcome === "rejected" ? "Protesten ble avvist" : "Protesten førte ikke fram"}${d.refund ? " (protesten gis tilbake)" : ""}</dd></dl>
+        ${d.reason ? `<p class="reason">${esc(d.reason)}</p>` : ""}</div>` : "";
+    const stew = S.canSteward ? `<div class="adminbar"><div class="lbl">Stewards</div>
+        ${p.status === "submitted" || p.status === "appealed" ? `<button class="btn sm" data-act="pStatus" data-v="review">Merk som under behandling</button>` : ""}
+        ${isOpen(p) ? `<button class="btn sm primary" data-act="pDecide">${d && p.status !== "appealed" ? "Endre avgjørelse" : "Avgjør sak"}</button>` : ""}
+        ${p.status === "decided" ? `<button class="btn sm" data-act="pStatus" data-v="closed">Lukk sak</button>` : ""}
+        ${isDone(p) ? `<button class="btn sm" data-act="pStatus" data-v="reopened">Gjenåpne</button>` : ""}
+        ${isDone(p) && d && d.outcome === "pen" && d.apply ? `<p class="muted small" style="width:100%;margin:0">Gjenåpner du saken, tas straffen ut av resultatet til saken er avgjort på nytt.</p>` : ""}</div>` : "";
+    const replyForm = R ? `<form class="panel" data-form="reply"><h3>${R.kind === "appeal" ? "Anke avgjørelsen" : "Legg til svar eller bevis"}</h3>
+        <p class="muted small">${R.kind === "appeal" ? `En anke koster én protest (du har ${S.quota[p.round] == null ? "…" : S.quota[p.round]} igjen i runden), og gis tilbake hvis den fører fram. Anken vises i sakshistorikken.` : "Gratis. Bare stewards ser svaret ditt."}</p>
+        <label class="fld"><span>Tekst</span><textarea id="rpText" required maxlength="4000" style="font-family:var(--body);font-size:15px;min-height:100px"></textarea></label>
+        <label class="fld"><span>Video (valgfritt)</span><input id="rpVideo" type="url" maxlength="500" placeholder="Lenke til YouTube, Streamable e.l." /></label>
+        <div class="row" style="justify-content:flex-end"><button class="btn ghost" type="button" data-act="replyCancel">Avbryt</button><button class="btn primary" type="submit" ${S.busy === "reply" || (R.kind === "appeal" && S.quota[p.round] === 0) ? "disabled" : ""}>${R.kind === "appeal" ? "Send anke" : "Send"}</button></div></form>` : "";
+    return `<div class="viewhead"><div><p class="small"><button class="linkbtn" data-act="pList">← Alle protester</button></p>
+        <h2>Sak #${p.no} · R${p.round} ${esc(raceLabel(L, p.race))}</h2><p class="muted">Sendt inn ${fmtDate(p.created_at, true)}</p></div><div class="tools">${statusBadge(p)}</div></div>
+      <div class="detail"><div>
+        <div class="panel"><div class="vs">
+          <div><div class="lbl">Sendt inn av</div><div class="drvn">${nb ? `<span class="n">#${esc(nb)}</span>` : ""}${esc(by)}</div></div>
+          <div class="mid">MOT</div>
+          <div><div class="lbl">Protest mot</div><div class="drvn">${na ? `<span class="n">#${esc(na)}</span>` : ""}${esc(ag)}</div></div></div>
+          <h3>Hendelse</h3>
+          <p class="meta">R${p.round} ${esc(trackOf(L, p.round))} · ${esc(raceLabel(L, p.race))}${p.lap != null ? " · Runde " + p.lap : ""}${p.replay ? " · Replay " + esc(p.replay) : ""}${p.place ? " · " + esc(p.place) : ""}</p>
+          ${p.kind ? `<p><span class="badge">${esc(p.kind)}</span></p>` : ""}
+          <p class="descr">${esc(p.descr)}</p></div>
+        ${safeUrl(p.video) ? `<div class="panel"><h3>Video</h3>${videoBlock(p.video)}</div>` : ""}
+        ${decBox}
+        ${p.status === "decided" && p.appeal_until ? `<p class="callout">${Date.now() < new Date(p.appeal_until).getTime() ? `Ankefrist: ${fmtDate(p.appeal_until, true)}. En anke koster én protest, og gis tilbake hvis den fører fram.` : `Ankefristen gikk ut ${fmtDate(p.appeal_until, true)}.`}</p>` : ""}
+        ${p.status === "decided" && !p.appeal_until && d && d.prev ? `<p class="callout">Anken er behandlet. Avgjørelsen er endelig.</p>` : ""}
+        ${(canAppeal || canRespond) && !R ? `<div class="row" style="margin-top:0">${canAppeal ? `<button class="btn" data-act="reply" data-v="appeal">Anke avgjørelsen</button>` : ""}${canRespond ? `<button class="btn" data-act="reply" data-v="response">Legg til svar / bevis</button>` : ""}</div>` : ""}
+        ${replyForm}
+      </div><div>
+        ${stew}
+        <div class="panel"><h3>Sakshistorikk</h3><ul class="hist">
+          ${evs.map((e) => `<li><div class="when">${fmtDate(e.at)} · ${esc(e.author || "")}</div><b>${esc(kindName[e.kind] || e.kind)}</b>${e.private ? `<span class="priv">Bare stewards</span>` : ""}
+            ${e.text ? `<div class="muted evtext">${esc(e.text)}</div>` : ""}${safeUrl(e.video) ? `<div class="small"><a href="${esc(safeUrl(e.video))}" target="_blank" rel="noopener noreferrer nofollow">Video ↗</a></div>` : ""}
+            ${e.token ? `<div class="muted small">Protester: ${e.token > 0 ? "+" : ""}${e.token}</div>` : ""}</li>`).join("") || `<li class="muted">Ingen hendelser ennå.</li>`}
+        </ul></div>
+      </div></div>`;
+  }
+
+  /** Effekt av en tenkt avgjørelse: sammenligner løp og standings med og uten straffen. */
+  function decisionPreview(L, p, D) {
+    const res = S.results["r" + p.round + "-" + p.race]; if (!res) return "";
+    const base = pensByRid();
+    Object.keys(base).forEach((k) => (base[k] = base[k].filter((x) => x.case !== p.no)));
+    const next = JSON.parse(JSON.stringify(base));
+    const name = driverName(D.driver, "");
+    if (D.outcome === "pen" && D.apply && name && ["pts", "time", "DSQ"].includes(D.penT)) {
+      (next[res.id] = next[res.id] || []).push({ key: CORE.norm(name), t: D.penT, v: +D.penV || 0, case: p.no });
+    }
+    const dm = driverMap();
+    const a = CORE.computeRace(res, L, dm, base[res.id]), b = CORE.computeRace(res, L, dm, next[res.id]);
+    const sa = CORE.computeStandings(L, S.results, S.drivers, "all", base), sb2 = CORE.computeStandings(L, S.results, S.drivers, "all", next);
+    const changed = b.filter((r) => { const o = a.find((x) => x.key === r.key); return o && (o.cpos !== r.cpos || o.pts !== r.pts || o.dq !== r.dq); });
+    if (!changed.length) return `<p class="muted small">Ingen endring i resultatet.</p>`;
+    const pl = (r) => (r.dq ? "DSQ" : r.cpos + ".");
+    return `<table class="eff"><tr><th></th><th>Plass i løpet</th><th>Poeng i løpet</th><th>Standings</th></tr>
+      ${changed.slice(0, 8).map((r) => { const o = a.find((x) => x.key === r.key); const s0 = sa.rows.find((x) => x.key === r.key), s1 = sb2.rows.find((x) => x.key === r.key);
+        return `<tr><td>${r.key === CORE.norm(name) ? "<b>" + esc(r.name) + "</b>" : esc(r.name)}</td><td>${pl(o)} → <b>${pl(r)}</b></td><td>${fmtPts(o.pts)} → <b>${fmtPts(r.pts)}</b></td>
+          <td>${s0 && s1 ? `${fmtPts(s0.total)} → <b>${fmtPts(s1.total)} p</b> (${s0.pos !== s1.pos ? s0.pos + ". → " : ""}${s1.pos}.)` : ""}</td></tr>`; }).join("")}</table>
+      ${changed.length > 8 ? `<p class="muted small">… og ${changed.length - 8} til.</p>` : ""}`;
+  }
+
+  function viewDecide(L, p) {
+    const by = driverName(p.by_driver, p.by_name), ag = driverName(p.against_driver, p.against_name);
+    if (!S.dec || S.dec.id !== p.id) {
+      const d = p.decision || {};
+      S.dec = { id: p.id, outcome: d.outcome || "pen", driver: d.driver || p.against_driver || "", penT: (d.pen && d.pen.t) || "pts", penV: d.pen ? d.pen.v : 5,
+        rule: d.rule || "", reason: d.reason || "", apply: d.apply !== false, refund: d.refund != null ? d.refund : true };
+    }
+    const D = S.dec;
+    const radio = (field, v, label) => `<button type="button" class="${D[field] === v ? "on" : ""}" data-act="decSet" data-f="${field}" data-v="${v}">${label}</button>`;
+    const inRes = new Set(((S.results["r" + p.round + "-" + p.race] || {}).rows || []).map((r) => CORE.norm(r.name)));
+    const drvOpts = S.drivers.filter((d) => inRes.has(CORE.norm(d.name)) || d.id === D.driver).sort((a, b) => a.name.localeCompare(b.name, "nb"))
+      .map((d) => `<option value="${esc(d.id)}" ${d.id === D.driver ? "selected" : ""}>${d.num ? "#" + esc(d.num) + " " : ""}${esc(d.name)}</option>`).join("");
+    const target = p.status === "appealed" ? driverName(p.appeal_by, "den som anket") : by;
+    return `<section class="panel" style="max-width:780px">
+      <p class="small"><button class="linkbtn" data-act="openCase" data-no="${p.no}">← Tilbake til sak #${p.no}</button></p>
+      <h2>${p.status === "appealed" ? "Behandle anke i" : "Avgjør"} sak #${p.no}</h2>
+      <p class="muted">R${p.round} ${esc(raceLabel(L, p.race))}${p.lap != null ? " · Runde " + p.lap : ""} · ${esc(by)} mot ${esc(ag)}${p.kind ? " · " + esc(p.kind) : ""}</p>
+      <form data-form="decide">
+      <div class="fld"><span>Utfall</span><div class="seg radio">${radio("outcome", "nfa", "Ingen videre handling")}${radio("outcome", "warn", "Advarsel")}${radio("outcome", "pen", "Straff")}${radio("outcome", "rejected", "Avvist (ugyldig protest)")}</div></div>
+      ${D.outcome === "pen" || D.outcome === "warn" ? `<label class="fld"><span>Hvem får ${D.outcome === "pen" ? "straffen" : "advarselen"}</span><select data-chg="dec.driver">${drvOpts}</select></label>` : ""}
+      ${D.outcome === "pen" ? `<div class="fld"><span>Straff</span><div class="seg radio">${radio("penT", "pts", "Poengtrekk")}${radio("penT", "time", "Tidsstraff")}${radio("penT", "DSQ", "DSQ fra løpet")}</div></div>
+        ${D.penT !== "DSQ" ? `<label class="fld inline"><span>${D.penT === "time" ? "Sekunder lagt til løpstiden" : "Poeng som trekkes"}</span><input type="number" min="0" step="1" class="num" value="${esc(D.penV)}" data-chg="dec.penV" /></label>` : ""}` : ""}
+      <label class="fld"><span>Regel / kategori (valgfritt)</span><input value="${esc(D.rule)}" data-chg="dec.rule" maxlength="200" /></label>
+      <label class="fld"><span>Begrunnelse (vises offentlig)</span><textarea data-chg="dec.reason" maxlength="4000" style="font-family:var(--body);font-size:15px;min-height:80px">${esc(D.reason)}</textarea></label>
+      ${D.outcome === "pen" ? `<div class="applybox"><label class="chk"><input type="checkbox" data-chg="dec.apply" ${D.apply ? "checked" : ""} /> Legg straffen inn i resultatet for R${p.round} ${esc(raceLabel(L, p.race))}</label>
+        ${D.apply ? `<div class="effect"><div class="lbl">Forhåndsvisning av effekten</div>${decisionPreview(L, p, D)}</div>` : ""}
+        <span class="muted small">Resultatlisten og standings oppdateres når avgjørelsen publiseres, og straffen vises med lenke til saken.</span></div>` : ""}
+      <label class="chk"><input type="checkbox" data-chg="dec.refund" ${D.refund ? "checked" : ""} /> ${p.status === "appealed" ? "Anken førte fram" : "Protesten førte fram"} – gi protesten tilbake til ${esc(target)}</label>
+      <div class="row" style="justify-content:flex-end"><button class="btn ghost" type="button" data-act="openCase" data-no="${p.no}">Avbryt</button><button class="btn primary" type="submit" ${S.busy === "decide" ? "disabled" : ""}>Publiser avgjørelse</button></div>
+      </form></section>`;
   }
 
   /* ---------------- import ---------------- */
@@ -494,7 +856,16 @@
         <td class="act">${conf ? `<button class="btn sm danger" data-act="delDrv" data-id="${d.id}">Slett</button><button class="btn sm ghost" data-act="cancelConfirm">Avbryt</button>` : `<button class="btn sm ghost" data-act="askDelDrv" data-id="${d.id}" aria-label="Slett ${esc(d.name)}">Slett</button>`}</td></tr>`
         : `<tr><td class="num">${esc(d.num || "")}</td><td class="name">${esc(d.name)}</td><td><span class="div d${d.div || 1}">${d.div || 1}</span></td><td class="num">${counts[CORE.norm(d.name)] || 0}</td><td></td></tr>`;
     }).join("");
-    return `<div class="viewhead"><div><h2>Førere</h2><p class="muted">${S.drivers.length} førere · ${n2} i ${esc(d2n)}. Nye førere legges til automatisk ved import.</p></div>
+    let linkBox = "";
+    if (S.canWrite && protestsOn(L) && S.links) {
+      const pend = S.links.filter((x) => !x.approved), okd = S.links.filter((x) => x.approved);
+      const li = (x, pending) => `<li><span><b>${esc(driverName(x.driver_id, "(slettet fører)"))}</b> <span class="muted">${esc(x.email)}</span></span>
+        <span>${pending ? `<button class="btn sm primary" data-act="approveLink" data-uid="${esc(x.user_id)}" data-ok="1">Godkjenn</button> ` : ""}<button class="btn sm ghost" data-act="approveLink" data-uid="${esc(x.user_id)}" data-ok="0">${pending ? "Avvis" : "Fjern"}</button></span></li>`;
+      linkBox = `<section class="panel"><h3>Førerkontoer</h3><p class="muted small">Førere som har logget inn og bedt om å bli koblet til seg selv. Bare godkjente førere kan sende inn protester. Sjekk at e-postadressen hører til føreren.</p>
+        ${pend.length ? `<div class="lbl" style="margin-top:8px">Venter på godkjenning · ${pend.length}</div><ul class="admins">${pend.map((x) => li(x, true)).join("")}</ul>` : `<p class="small muted">Ingen nye forespørsler.</p>`}
+        ${okd.length ? `<details><summary class="small">Godkjente kontoer (${okd.length})</summary><ul class="admins">${okd.map((x) => li(x, false)).join("")}</ul></details>` : ""}</section>`;
+    }
+    return `${linkBox}<div class="viewhead"><div><h2>Førere</h2><p class="muted">${S.drivers.length} førere · ${n2} i ${esc(d2n)}. Nye førere legges til automatisk ved import.</p></div>
       <div class="tools"><input type="search" id="q" placeholder="Søk etter fører" value="${esc(S.q)}" data-inp="q" aria-label="Søk" /></div></div>
       ${S.canWrite ? `<form class="addrow" data-form="addDrv"><input id="adNum" placeholder="#" class="num" aria-label="Bilnummer" /><input id="adName" placeholder="Navn, slik det står i iRacing" required aria-label="Navn" />
         <select id="adDiv" aria-label="Divisjon"><option value="1">Div 1</option><option value="2">Div 2</option></select><button class="btn" type="submit">Legg til fører</button></form>` : ""}
@@ -504,10 +875,29 @@
 
   /* ---------------- oppsett ---------------- */
   function viewSetup(L) {
-    if (!S.draft || S.draftFor !== L.id) { S.draft = JSON.parse(JSON.stringify({ name: L.name, races: L.races, rounds: L.rounds, scale: L.scale, d2: L.d2 || { enabled: false, name: "Division 2", ownPoints: true }, bestOf: L.bestOf || 0, logo: L.logo || "" })); S.draftFor = L.id; }
+    if (!S.draft || S.draftFor !== L.id) { S.draft = JSON.parse(JSON.stringify({ name: L.name, races: L.races, rounds: L.rounds, scale: L.scale, d2: L.d2 || { enabled: false, name: "Division 2", ownPoints: true }, bestOf: L.bestOf || 0, logo: L.logo || "", protests: CORE.protestDefaults(L.protests) })); S.draftFor = L.id; }
     const D = S.draft;
     const conf = S.confirm === "delLeague";
     if (!S.admins && !S.adminsLoading) { S.adminsLoading = true; DATA.listAdmins().then((a) => { S.admins = a; S.adminsLoading = false; softRender(); }).catch(() => { S.adminsLoading = false; }); }
+    if (!S.stewards && !S.stewardsLoading && Array.isArray(S.protests)) { S.stewardsLoading = true; DATA.listStewards().then((a) => { S.stewards = a; S.stewardsLoading = false; softRender(); }).catch(() => { S.stewardsLoading = false; }); }
+    const P = D.protests;
+    const hours = (field) => `<select data-dr="protests.${field}" data-num="1">${[24, 48, 72, 96, 168].map((h) => `<option value="${h}" ${+P[field] === h ? "selected" : ""}>${h === 168 ? "1 uke" : h + " timer"}</option>`).join("")}</select>`;
+    const protestPanels = !Array.isArray(S.protests)
+      ? `<section class="panel"><h3>Protester</h3><p class="muted small">Protestsystemet er ikke satt opp i databasen ennå. Kjør <code>supabase/protester.sql</code> i Supabase (SQL Editor → New query → lim inn → Run), og last siden på nytt.</p></section>`
+      : `<section class="panel"><h3>Protester</h3>
+        <label class="chk"><input type="checkbox" ${P.enabled ? "checked" : ""} data-dr="protests.enabled" /> Ta imot protester i denne ligaen</label>
+        <div class="grid2">
+          <label class="fld"><span>Protestfrist etter løpsdagen</span>${hours("deadlineH")}</label>
+          <label class="fld"><span>Ankefrist etter avgjørelse</span>${hours("appealH")}</label>
+          <label class="fld"><span>Protester per fører per runde</span><input type="number" min="1" max="20" class="num" value="${+P.perRound || 2}" data-dr="protests.perRound" /></label>
+          <label class="fld"><span>Video</span><select data-dr="protests.video"><option value="req" ${P.video === "req" ? "selected" : ""}>Påkrevd</option><option value="opt" ${P.video !== "req" ? "selected" : ""}>Valgfri</option></select></label>
+        </div>
+        <p class="muted small">Fristen regnes fra midnatt etter datoen som står på runden under Runder. Runder uten dato har ingen frist.</p>
+        <label class="fld"><span>Hendelsestyper (én per linje)</span><textarea rows="7" data-dr="protests.kindsText">${esc(P.kinds.join("\n"))}</textarea></label></section>
+      <section class="panel"><h3>Stewards</h3><p class="muted small">Stewards kan behandle og avgjøre protester, men ikke endre oppsett eller importere resultater. Arrangører kan også avgjøre protester.</p>
+        ${S.stewards ? (S.stewards.length ? `<ul class="admins">${S.stewards.map((a) => `<li><span>${esc(a.email)}</span><button class="btn sm ghost" data-act="rmSteward" data-email="${esc(a.email)}">Fjern</button></li>`).join("")}</ul>` : `<p class="small muted">Ingen stewards ennå.</p>`) : `<p class="muted small">Henter…</p>`}
+        <form data-form="addSteward" class="addrow"><input id="stewardEmail" type="email" placeholder="e-post til ny steward" required aria-label="E-post" /><button class="btn" type="submit">Legg til</button></form>
+        <p class="muted small">Stewarden logger inn med samme e-postadresse. Førere kobler kontoen sin til seg selv under Protester, og du godkjenner under Førere.</p></section>`;
     return `<div class="viewhead"><div><h2>Oppsett</h2><p class="muted">Endringer gjelder alle i arrangørgruppa når du trykker Lagre.</p></div>
       <div class="tools"><button class="btn primary" data-act="saveSetup">Lagre oppsett</button></div></div>
       <div class="setup">
@@ -538,6 +928,7 @@
           : `<p class="muted small">Henter…</p>`}
         <form data-form="addAdmin" class="addrow"><input id="adminEmail" type="email" placeholder="e-post til ny arrangør" required aria-label="E-post" /><button class="btn" type="submit">Legg til</button></form>
         <p class="muted small">Den nye arrangøren logger inn med samme e-postadresse.</p></section>
+      ${protestPanels}
       <section class="panel danger"><h3>Slett liga</h3><p class="muted small">Sletter oppsett, førere og alle resultater for «${esc(L.name)}» for alle i gruppa.</p>
         ${conf ? `<span class="confirm">Er du sikker? <button class="btn sm danger" data-act="delLeague">Slett ligaen</button><button class="btn sm ghost" data-act="cancelConfirm">Avbryt</button></span>` : `<button class="btn sm ghost" data-act="askDelLeague">Slett liga</button>`}</section>
       </div>`;
@@ -545,6 +936,8 @@
   function setDraft(path, val) {
     const D = S.draft; if (!D) return;
     if (path === "scaleText") { D.scale = String(val).split(/[,;\s]+/).map((x) => parseFloat(x.replace(",", "."))).filter((x) => isFinite(x)); return; }
+    if (path === "protests.kindsText") { D.protests.kinds = String(val).split("\n").map((x) => x.trim()).filter(Boolean); return; }
+    if (/^protests\.(deadlineH|appealH|perRound)$/.test(path)) val = Math.max(1, parseInt(val, 10) || 1);
     const p = path.split("."); let o = D;
     for (let i = 0; i < p.length - 1; i++) o = o[p[i]];
     o[p[p.length - 1]] = val;
@@ -616,6 +1009,34 @@
       }, "Ligaen er slettet.");
       S.lid = null; S.tab = "standings";
     },
+    openCase: (b) => {
+      const p = findCase(b.dataset.no); if (!p) return toast("Fant ikke sak #" + b.dataset.no + ".", "err");
+      S.tab = "protests"; S.pv.mode = "case"; S.pv.id = p.id; S.reply = null; S.dec = null; render(); window.scrollTo(0, 0);
+    },
+    pList: () => { S.pv.mode = "list"; S.pv.id = null; S.reply = null; render(); window.scrollTo(0, 0); },
+    newProtest: () => { S.pv.mode = "new"; render(); window.scrollTo(0, 0); },
+    pFilterDrv: (b) => { S.tab = "protests"; S.pv = { mode: "list", id: null, f: { rid: "", no: "", drv: b.dataset.name, st: "" } }; render(); window.scrollTo(0, 0); },
+    cancelLink: async () => { const L = league(); await write(() => DATA.cancelLink(L.id), "Forespørselen er trukket."); await loadLinks(L.id); render(); },
+    reply: (b) => { S.reply = { id: S.pv.id, kind: b.dataset.v }; render(); const t = $("#rpText"); if (t) t.focus(); },
+    replyCancel: () => { S.reply = null; render(); },
+    pDecide: () => { S.pv.mode = "decide"; S.dec = null; render(); window.scrollTo(0, 0); },
+    decSet: (b) => {
+      const D = S.dec; if (!D) return;
+      D[b.dataset.f] = b.dataset.v;
+      if (b.dataset.f === "outcome") D.refund = ["pen", "warn"].includes(b.dataset.v);
+      render();
+    },
+    pStatus: async (b) => {
+      const L = league(), p = (S.protests || []).find((x) => x.id === S.pv.id); if (!p) return;
+      const v = b.dataset.v, status = v === "reopened" ? "review" : v;
+      await write(async () => {
+        await DATA.updateProtest(p.id, { status });
+        await DATA.addEvents([{ protest_id: p.id, league_id: L.id, kind: v, author: "Stewards", round: p.round }]);
+      }, { review: "Saken er merket som under behandling.", closed: "Saken er lukket.", reopened: "Saken er gjenåpnet." }[v]);
+      await loadProtestData(L.id); render();
+    },
+    approveLink: async (b) => { const L = league(); await write(() => DATA.approveLink(L.id, b.dataset.uid, b.dataset.ok === "1"), b.dataset.ok === "1" ? "Koblingen er godkjent." : "Koblingen er fjernet."); await loadLinks(L.id); render(); },
+    rmSteward: async (b) => { const ok = await write(() => DATA.removeSteward(b.dataset.email), "Stewarden er fjernet."); if (ok) { S.stewards = null; render(); } },
     addRace: () => { const D = S.draft; let k = "R" + (D.races.length + 1); while (D.races.find((r) => r.key === k)) k += "x"; D.races.push({ key: k, label: "Race " + (D.races.length + 1), short: "R" + (D.races.length + 1) }); render(); },
     rmRace: (b) => { S.draft.races.splice(+b.dataset.i, 1); render(); },
     logoReset: () => { S.draft.logo = ""; render(); },
@@ -624,7 +1045,9 @@
       if (!D.name.trim()) return toast("Serien må ha et navn.", "err");
       if (!D.scale.length) return toast("Poengskalaen er tom. Skriv inn poeng skilt med komma.", "err");
       const lost = Object.values(S.results).filter((r) => r.round > D.rounds.length || !D.races.find((x) => x.key === r.race)).length;
-      const ok = await write(() => S.db.doc("leagues/" + L.id).update({ name: D.name.trim(), races: D.races, rounds: D.rounds, scale: D.scale, d2: D.d2, bestOf: +D.bestOf || 0, logo: D.logo || "" }), "Oppsettet er lagret.");
+      const patch = { name: D.name.trim(), races: D.races, rounds: D.rounds, scale: D.scale, d2: D.d2, bestOf: +D.bestOf || 0, logo: D.logo || "" };
+      if (D.protests) { if (!D.protests.kinds.length) D.protests.kinds = ["Annet"]; patch.protests = D.protests; }
+      const ok = await write(() => S.db.doc("leagues/" + L.id).update(patch), "Oppsettet er lagret.");
       if (ok) { S.draft = null; if (lost) toast(`Lagret. ${lost} resultat(er) hører til runder eller løp som er fjernet og vises ikke lenger.`); render(); }
     },
   };
@@ -677,6 +1100,78 @@
       if (error) { toast(authErr(error), "err"); render(); return; }
       S.login = false; S.loginMode = "in"; toast("Passordet er lagret."); checkAdmin(); return;
     }
+    if (f.dataset.form === "reqLink") {
+      const L = league(), v = $("#linkDrv").value; if (!v) return;
+      const ok = await write(() => DATA.requestLink(L.id, v), "Forespørselen er sendt. En arrangør må godkjenne den.");
+      if (ok) { await loadLinks(L.id); render(); }
+      return;
+    }
+    if (f.dataset.form === "protest") {
+      const L = league(), F = S.pf; if (!L || !F) return;
+      const val = (id) => ($("#" + id) ? $("#" + id).value.trim() : "");
+      Object.assign(F, { rid: val("pfRid"), against: val("pfAgainst"), kind: val("pfKind"), lap: val("pfLap"), replay: val("pfReplay"), place: val("pfPlace"), descr: val("pfDescr"), video: val("pfVideo") });
+      const k = CORE.raceKeys(L).find((x) => x.id === F.rid);
+      if (!k) return toast("Velg løpet.", "err");
+      if (!F.against) return toast("Velg føreren du protesterer mot.", "err");
+      if (F.video && !safeUrl(F.video)) return toast("Videolenken må begynne med https://", "err");
+      S.busy = "protest"; render();
+      let no = null;
+      const ok = await write(async () => { no = await DATA.fileProtest(L.id, { round: k.round, race: k.race, against: F.against, kind: F.kind, lap: F.lap === "" ? null : +F.lap, replay: F.replay, place: F.place, descr: F.descr, video: F.video }); }, null);
+      S.busy = "";
+      if (ok) {
+        toast("Protesten er sendt inn som sak #" + no + ".");
+        S.pf = null; await loadProtestData(L.id);
+        const p = findCase(no); S.pv.mode = p ? "case" : "list"; S.pv.id = p ? p.id : null; window.scrollTo(0, 0);
+      }
+      render(); return;
+    }
+    if (f.dataset.form === "reply") {
+      const L = league(), R = S.reply; if (!R) return;
+      const text = $("#rpText").value.trim(), video = $("#rpVideo").value.trim();
+      if (!text) return toast("Skriv en tekst.", "err");
+      if (video && !safeUrl(video)) return toast("Videolenken må begynne med https://", "err");
+      S.busy = "reply"; render();
+      const ok = await write(() => DATA.protestReply(R.id, R.kind, text, video), R.kind === "appeal" ? "Anken er sendt inn." : "Svaret er sendt til stewards.");
+      S.busy = "";
+      if (ok) { S.reply = null; S.quota = {}; await loadProtestData(L.id); }
+      render(); return;
+    }
+    if (f.dataset.form === "decide") {
+      const L = league(), D = S.dec, p = (S.protests || []).find((x) => x.id === (D && D.id)); if (!p || !D) return;
+      const cfg = protestCfg(L);
+      const who = D.outcome === "pen" || D.outcome === "warn";
+      if (who && !D.driver) return toast("Velg hvem avgjørelsen gjelder.", "err");
+      const appealed = p.status === "appealed";
+      const decision = {
+        outcome: D.outcome, driver: who ? D.driver : null, driverName: who ? driverName(D.driver, "") : "",
+        pen: D.outcome === "pen" ? { t: D.penT, v: D.penT === "DSQ" ? 0 : Math.max(0, +D.penV || 0) } : null,
+        apply: D.outcome === "pen" && !!D.apply, rule: (D.rule || "").trim(), reason: (D.reason || "").trim(), refund: !!D.refund,
+        at: new Date().toISOString(), prev: appealed ? p.decision : null,
+      };
+      const evs = [{ protest_id: p.id, league_id: L.id, kind: "decision", author: "Stewards", round: p.round,
+        text: outcomeText(decision) + (who ? " · " + decision.driverName : "") + (decision.reason ? "\n" + decision.reason : "") }];
+      if (decision.refund) {
+        const target = appealed ? p.appeal_by : p.by_driver;
+        const mine = S.pevents.filter((e) => e.protest_id === p.id && e.by_driver === target);
+        const lastFiling = mine.filter((e) => e.kind === (appealed ? "appeal" : "submitted")).pop();
+        const already = lastFiling && mine.some((e) => e.kind === "refund" && e.id > lastFiling.id);
+        if (target && lastFiling && !already) evs.push({ protest_id: p.id, league_id: L.id, kind: "refund", author: "Stewards", by_driver: target, round: p.round, token: 1, text: driverName(target, "") });
+      }
+      S.busy = "decide"; render();
+      const ok = await write(async () => {
+        await DATA.updateProtest(p.id, { status: "decided", decision, appeal_until: appealed ? null : new Date(Date.now() + (+cfg.appealH || 0) * 3600000).toISOString() });
+        await DATA.addEvents(evs);
+      }, "Avgjørelsen er publisert.");
+      S.busy = "";
+      if (ok) { S.dec = null; await loadProtestData(L.id); S.pv.mode = "case"; window.scrollTo(0, 0); }
+      render(); return;
+    }
+    if (f.dataset.form === "addSteward") {
+      const email = $("#stewardEmail").value.trim(); if (!email) return;
+      const ok = await write(() => DATA.addSteward(email), "Stewarden er lagt til.");
+      if (ok) { S.stewards = null; render(); }
+      return;
+    }
     if (f.dataset.form === "addAdmin") {
       const email = $("#adminEmail").value.trim(); if (!email) return;
       const ok = await write(() => DATA.addAdmin(email), "Arrangøren er lagt til.");
@@ -709,6 +1204,13 @@
     if (t.dataset.dr && t.type === "checkbox") { setDraft(t.dataset.dr, t.checked); render(); return; }
     if (!c) return;
     if (c === "league") { selectLeague(t.value); return; }
+    if (c.startsWith("pf.")) { S.pv.f[c.slice(3)] = t.value; render(); return; }
+    if (c.startsWith("pform.") && S.pf) { S.pf[c.slice(6)] = t.value; if (c === "pform.rid") render(); return; }
+    if (c.startsWith("dec.") && S.dec) {
+      const k = c.slice(4); S.dec[k] = t.type === "checkbox" ? t.checked : t.value;
+      if (["driver", "penV", "apply"].includes(k)) render();
+      return;
+    }
     if (c === "impRound") { S.imp.round = +t.value; render(); }
     if (c === "impRace") { S.imp.race = t.value; render(); }
     if (c === "file" && t.files[0]) readFile(t.files[0]);
