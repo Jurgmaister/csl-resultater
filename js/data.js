@@ -110,7 +110,10 @@ const DATA = (() => {
   async function updateProtest(id, patch) {
     const { error } = await sb.from("protests").update({ ...patch, updated_at: new Date().toISOString() }).eq("id", id); err(error); onWrite("protests");
   }
-  async function addEvents(list) { const { error } = await sb.from("protest_events").insert(list); err(error); onWrite("protests"); }
+  async function addEvents(list) {
+    // Flere rader i samme insert: Supabase setter manglende felt til null i stedet for standardverdien
+    const rows = list.map((e) => ({ by_driver: null, token: 0, text: "", video: "", private: false, ...e }));
+    const { error } = await sb.from("protest_events").insert(rows); err(error); onWrite("protests"); }
   async function listStewards() { const { data, error } = await sb.from("stewards").select("email,added_at").order("added_at"); if (missing(error)) return []; err(error); return data || []; }
   async function addSteward(email) { const { error } = await sb.from("stewards").insert({ email: email.trim().toLowerCase() }); err(error); }
   async function removeSteward(email) { const { error } = await sb.from("stewards").delete().eq("email", email); err(error); }

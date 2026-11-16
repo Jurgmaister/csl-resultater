@@ -1183,8 +1183,8 @@
       }
       S.busy = "decide"; render();
       const ok = await write(async () => {
-        await DATA.updateProtest(p.id, { status: "decided", decision, appeal_until: appealed ? null : new Date(Date.now() + (+cfg.appealH || 0) * 3600000).toISOString() });
         await DATA.addEvents(evs);
+        await DATA.updateProtest(p.id, { status: "decided", decision, appeal_until: appealed ? null : new Date(Date.now() + (+cfg.appealH || 0) * 3600000).toISOString() });
       }, "Avgjørelsen er publisert.");
       S.busy = "";
       if (ok) { S.dec = null; await loadProtestData(L.id); S.pv.mode = "case"; window.scrollTo(0, 0); }
