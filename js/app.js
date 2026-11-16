@@ -7,7 +7,7 @@
     imp: { round: 1, race: null, parsed: null, file: "", err: "", paste: false, busy: false },
     draft: null, draftFor: null, confirm: null, newLeague: false, q: "", pending: false, busy: "",
     // protester: protests = null betyr at tabellene ikke finnes i databasen ennå
-    protests: null, pevents: [], canSteward: false, myLink: null, links: null, stewards: null, quota: {},
+    protests: null, pevents: [], canSteward: false, stewards: null, quota: {},
     pv: { mode: "list", id: null, f: { rid: "", no: "", drv: "", st: "" } }, pf: null, dec: null, reply: null,
   };
   const $ = (s, r = document) => r.querySelector(s);
@@ -56,7 +56,6 @@
         else if (S.lid && table === "drivers") { S.drivers = await DATA.loadDrivers(S.lid); softRender(); }
         else if (S.lid && table === "results") { S.results = await DATA.loadResults(S.lid); softRender(); }
         else if (S.lid && table === "protests") { await loadProtestData(S.lid); softRender(); }
-        else if (S.lid && table === "links") { await loadLinks(S.lid); softRender(); }
       } catch (e) {}
     }, 250);
   }
@@ -64,21 +63,15 @@
   async function loadProtestData(lid) {
     const [p, ev] = await Promise.all([DATA.loadProtests(lid), DATA.loadEvents(lid)]);
     if (S.lid !== lid) return;
-    S.protests = p; S.pevents = ev; S.quota = {};
-  }
-  async function loadLinks(lid) {
-    const me = S.session ? await DATA.myLink(lid) : null;
-    if (S.lid !== lid) return;
-    S.myLink = me; S.quota = {};
-    if (S.canWrite) S.links = await DATA.listLinks(lid);
+    S.protests = p; S.pevents = ev; S.quota = {}; S.protestsLoaded = true;
   }
 
   async function checkAdmin() {
     S.canWrite = S.session ? await DATA.isAdmin() : false;
     S.canSteward = S.session ? await DATA.isSteward() : false;
-    S.admins = null; S.stewards = null; S.links = null;
+    S.admins = null; S.stewards = null;
     if (!S.canWrite && ["import", "setup"].includes(S.tab)) S.tab = "standings";
-    if (S.lid) { try { await Promise.all([loadLinks(S.lid), loadProtestData(S.lid)]); } catch (e) {} }
+    if (S.lid) { try { await loadProtestData(S.lid); } catch (e) {} }
     render();
   }
 
@@ -95,8 +88,24 @@
       S.ready = true; S.err = "Supabase er ikke satt opp ennå. Fyll inn adresse og nøkkel i js/config.js."; render(); return;
     }
     const slowT = setTimeout(() => { S.slow = true; render(); }, 10000);
+    // Lenke fra e-post («Glemt passord?»): les adressen før Supabase fjerner den
+    const urlInfo = new URLSearchParams((location.hash || "").replace(/^#/, "") + "&" + (location.search || "").replace(/^\?/, ""));
+    let recovering = urlInfo.get("type") === "recovery";
+    const linkErr = urlInfo.get("error_code") || urlInfo.get("error");
     const sb = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
     S.sb = sb;
+    // Lytt med en gang: PASSWORD_RECOVERY sendes rett etter oppstart og går tapt hvis vi venter
+    sb.auth.onAuthStateChange((ev, session) => {
+      const was = S.session && S.session.user.id, now = session && session.user.id;
+      S.session = session;
+      if (ev === "PASSWORD_RECOVERY") { recovering = true; S.login = true; S.loginMode = "newpw"; if (S.ready) render(); return; }
+      if (S.ready && was !== now) { S.login = false; S.loginSent = ""; checkAdmin(); }
+    });
+    if (linkErr) {
+      setTimeout(() => toast(/expired/i.test(linkErr) ? "Lenken er utløpt eller allerede brukt. Be om en ny med «Glemt passord?»." : "Lenken virket ikke (" + linkErr + "). Be om en ny.", "err"), 300);
+      history.replaceState(null, "", location.pathname);
+      S.login = true; S.loginMode = "forgot";
+    }
     DATA.init(sb, { onWrite: scheduleReload, cache: { leagues: () => S.leagues, results: () => S.results } });
     S.db = DATA.db;
     try {
@@ -105,12 +114,7 @@
       S.leagues = await DATA.loadLeagues();
     } catch (e) { clearTimeout(slowT); S.ready = true; S.err = "Ligadataene kan ikke leses akkurat nå (" + (e.message || e.code) + ")."; render(); return; }
     clearTimeout(slowT); S.slow = false; S.ready = true;
-    sb.auth.onAuthStateChange((ev, session) => {
-      const was = S.session && S.session.user.id, now = session && session.user.id;
-      S.session = session;
-      if (ev === "PASSWORD_RECOVERY") { S.login = true; S.loginMode = "newpw"; render(); return; }
-      if (was !== now) { S.login = false; S.loginSent = ""; checkAdmin(); }
-    });
+    if (recovering && S.session) { S.login = true; S.loginMode = "newpw"; }
     sb.channel("csl-endringer")
       .on("postgres_changes", { event: "*", schema: "public", table: "leagues" }, () => scheduleReload("leagues"))
       .on("postgres_changes", { event: "*", schema: "public", table: "drivers" }, () => scheduleReload("drivers"))
@@ -118,12 +122,13 @@
       .on("postgres_changes", { event: "*", schema: "public", table: "protests" }, () => scheduleReload("protests"))
       .on("postgres_changes", { event: "*", schema: "public", table: "protest_events" }, () => scheduleReload("protests"))
       .subscribe();
+    if (/^#protest/i.test(location.hash)) { S.tab = "protests"; S.pv.mode = "new"; S.pf = null; history.replaceState(null, "", location.pathname + location.search); }
     pickLeague();
   }
 
   async function selectLeague(id) {
     S.lid = id; S.drivers = []; S.results = {}; S.sel = null; S.draft = null; S.imp.parsed = null; S.confirm = null;
-    S.protests = null; S.pevents = []; S.myLink = null; S.links = null; S.quota = {}; S.pv = { mode: "list", id: null, f: { rid: "", no: "", drv: "", st: "" } }; S.pf = null; S.dec = null; S.reply = null;
+    S.protests = null; S.protestsLoaded = false; S.pevents = []; S.quota = {}; S.pv = { mode: S.pv.mode === "new" ? "new" : "list", id: null, f: { rid: "", no: "", drv: "", st: "" } }; S.dec = null; S.reply = null;
     if (id) store.set("csl.lid", id);
     render();
     if (id) {
@@ -132,7 +137,7 @@
         if (S.lid !== id) return;
         S.drivers = d; S.results = r; render();
       } catch (e) { toast("Kunne ikke hente ligaen: " + (e.message || ""), "err"); }
-      try { await Promise.all([loadProtestData(id), loadLinks(id)]); if (S.lid === id) render(); } catch (e) {}
+      try { await loadProtestData(id); if (S.lid === id) render(); } catch (e) {}
     }
   }
 
@@ -155,7 +160,7 @@
     if (S.login) { v.innerHTML = viewLogin(); return; }
     if (S.err) { v.innerHTML = `<div class="empty"><h2>Noe gikk galt</h2><p class="muted">${esc(S.err)}</p></div>`; return; }
     if (!L || S.newLeague) { v.innerHTML = viewNewLeague(); return; }
-    if (S.tab === "protests" && !protestsOn(L)) S.tab = "standings";
+    if (S.tab === "protests" && S.protestsLoaded && !protestTab(L)) S.tab = "standings";
     const fn = { standings: viewStandings, results: viewResults, protests: viewProtests, import: viewImport, drivers: viewDrivers, setup: viewSetup }[S.tab];
     v.innerHTML = fn(L);
     if (S.tab === "import") bindDrop();
@@ -170,18 +175,17 @@
     const nOpen = L && protestsOn(L) ? S.protests.filter(isOpen).length : 0;
     const tabs = [["standings", "Standings"], ["results", "Resultater"], ["protests", "Protester" + (nOpen ? ` <span class="tabn">${nOpen}</span>` : "")], ["import", "Importer"], ["drivers", "Førere"], ["setup", "Oppsett"]]
       .filter(([k]) => S.canWrite || !["import", "setup"].includes(k))
-      .filter(([k]) => k !== "protests" || (L && protestsOn(L)));
+      .filter(([k]) => k !== "protests" || (L && (protestTab(L) || (S.tab === "protests" && !S.protestsLoaded))));
     $("#tabs").innerHTML = L && !S.newLeague ? tabs.map(([k, t]) => `<button class="tab ${S.tab === k ? "on" : ""}" data-act="tab" data-v="${k}" aria-current="${S.tab === k ? "page" : "false"}">${t}</button>`).join("") : "";
     const em = S.session && S.session.user && S.session.user.email;
-    $("#account").innerHTML = S.sb ? (em ? `<span class="who" title="${esc(em)}">${esc(em)}</span><button class="btn ghost sm" data-act="logout">Logg ut</button>`
+    $("#account").innerHTML = S.sb ? (em ? `<button class="who linkbtn inv" data-act="changePw" title="${esc(em)} – trykk for å bytte passord">${esc(em)}</button><button class="btn ghost sm" data-act="logout">Logg ut</button>`
       : `<button class="btn ghost sm" data-act="login">Logg inn</button>`) : "";
     const ro = $("#ro");
     ro.hidden = S.canWrite || !S.ready || !!S.err || S.login;
     if (!ro.hidden) ro.innerHTML = `<div class="wrap">${em
       ? `Du er logget inn som ${esc(em)}, men er ikke lagt til som arrangør. Be en arrangør legge deg til under Oppsett → Arrangører.`
-      : L && protestsOn(L) ? `Du ser resultatene uten å være logget inn. <button class="linkbtn inv" data-act="login">Logg inn</button> for å sende inn protester (førere) eller importere og redigere (arrangører).`
       : `Du ser resultatene uten å være logget inn. Arrangører <button class="linkbtn inv" data-act="login">logger inn</button> for å importere og redigere.`}</div>`;
-    if (!ro.hidden && em && (S.canSteward || S.myLink || (L && protestsOn(L)))) ro.hidden = true;
+    if (!ro.hidden && em && S.canSteward) ro.hidden = true;
   }
 
   /* ---------------- innlogging ---------------- */
@@ -196,8 +200,8 @@
     else if (m === "newpw") body = `<p class="muted">Velg et nytt passord for ${esc((S.session && S.session.user.email) || "kontoen din")}.</p>
       <form data-form="newpw" class="stack"><label class="fld"><span>Nytt passord (minst 8 tegn)</span><input id="pw1" type="password" required minlength="8" autocomplete="new-password" /></label>
       <label class="fld"><span>Gjenta passordet</span><input id="pw2" type="password" required minlength="8" autocomplete="new-password" /></label>
-      <div class="row"><button class="btn primary" type="submit" ${busy}>Lagre passord</button></div></form>`;
-    else if (m === "up") body = `<p class="muted">Første gang? Lag et passord for e-postadressen din. Førere kobler deretter kontoen til seg selv under Protester. Arrangører og stewards får tilgang når en arrangør har lagt dem til under Oppsett.</p>
+      <div class="row"><button class="btn primary" type="submit" ${busy}>Lagre passord</button>${S.changePw ? cancel : ""}</div></form>`;
+    else if (m === "up") body = `<p class="muted">Første gang? Lag et passord for e-postadressen din. Du får tilgang når en arrangør har lagt deg til som arrangør eller steward under Oppsett.</p>
       <form data-form="signup" class="stack">${email}
       <label class="fld"><span>Velg passord (minst 8 tegn)</span><input id="pw1" type="password" required minlength="8" autocomplete="new-password" /></label>
       <label class="fld"><span>Gjenta passordet</span><input id="pw2" type="password" required minlength="8" autocomplete="new-password" /></label>
@@ -206,7 +210,7 @@
     else if (m === "forgot") body = `<p class="muted">Skriv e-postadressen din, så sender vi en lenke der du kan velge nytt passord.</p>
       <form data-form="forgot" class="stack">${email}<div class="row"><button class="btn primary" type="submit" ${busy}>Send lenke</button>
       <button class="btn ghost" type="button" data-act="loginMode" data-v="in">Tilbake</button></div></form>`;
-    else body = `<p class="muted">For arrangører, stewards og førere som vil sende inn protester. Alle kan se standings, resultater og avgjørelser uten å logge inn.</p>
+    else body = `<p class="muted">For arrangører og stewards. Alle kan se standings og resultater, og sende inn protester, uten å logge inn.</p>
       <form data-form="login" class="stack">${email}
       <label class="fld"><span>Passord</span><input id="loginPw" type="password" required autocomplete="current-password" /></label>
       <div class="row"><button class="btn primary" type="submit" ${busy}>Logg inn</button>${cancel}</div></form>
@@ -445,6 +449,7 @@
   /* ---------------- protester: hjelpere ---------------- */
   const protestCfg = (L) => CORE.protestDefaults(L && L.protests);
   const protestsOn = (L) => Array.isArray(S.protests) && (protestCfg(L).enabled || S.protests.length > 0);
+  const protestTab = (L) => protestsOn(L) || (Array.isArray(S.protests) && S.leagues.some((l) => protestCfg(l).enabled));
   const isOpen = (p) => ["submitted", "review", "appealed"].includes(p.status);
   const isDone = (p) => ["decided", "closed"].includes(p.status);
   const driverById = (id) => S.drivers.find((d) => d.id === id) || null;
@@ -494,13 +499,23 @@
     if (d.outcome === "nfa") return `<span class="badge nfa">Ingen videre handling</span>`;
     return `<span class="badge">${esc(OUTCOME[d.outcome] || "Lukket")}</span>`;
   }
-  const myDriver = () => (S.myLink && S.myLink.approved ? S.myLink.driver_id : null);
   const findCase = (no) => (S.protests || []).find((p) => p.no === +no) || null;
-  async function needQuota(L, round) {
-    if (!myDriver() || S.quota[round] != null || S.quota["_" + round]) return;
-    S.quota["_" + round] = true;
-    try { S.quota[round] = await DATA.quota(L.id, round); } catch (e) {} finally { delete S.quota["_" + round]; }
+  const anyProtestLeague = () => S.leagues.some((l) => protestCfg(l).enabled);
+  /** Protester igjen for en fører i en runde (hentes fra databasen og huskes til neste endring). */
+  const quotaKey = (round, did) => round + ":" + did;
+  async function needQuota(L, round, did) {
+    const k = quotaKey(round, did);
+    if (!did || S.quota[k] != null || S.quota["_" + k]) return;
+    S.quota["_" + k] = true;
+    try { S.quota[k] = await DATA.quota(L.id, round, did); } catch (e) {} finally { delete S.quota["_" + k]; }
     softRender();
+  }
+  /** Førere i et løp, hentet fra resultatfilen, koblet til førerlisten (id). */
+  function raceDrivers(rid) {
+    const res = S.results[rid]; if (!res) return [];
+    const dm = driverMap();
+    return (res.rows || []).map((r) => { const d = dm.get(CORE.norm(r.name)); return d ? { id: d.id, name: d.name, num: r.num || d.num || "" } : null; })
+      .filter(Boolean).sort((a, b) => a.name.localeCompare(b.name, "nb"));
   }
   const raceOpts = (L) => CORE.raceKeys(L).filter((k) => S.results[k.id]).map((k) => ({ ...k, name: `R${k.round} ${trackOf(L, k.round)} · ${raceLabel(L, k.race)}` }));
   const embedUrl = (u) => {
@@ -519,6 +534,7 @@
 
   /* ---------------- protester: visninger ---------------- */
   function viewProtests(L) {
+    if (!Array.isArray(S.protests)) return `<div class="empty"><div class="spin"></div><p>Henter protester…</p></div>`;
     const pv = S.pv;
     if (pv.mode === "new") return viewProtestForm(L);
     const p = pv.id ? S.protests.find((x) => x.id === pv.id) : null;
@@ -528,21 +544,9 @@
     return viewProtestList(L);
   }
 
-  function linkPanel(L) {
-    const cfg = protestCfg(L);
-    if (!cfg.enabled) return "";
-    if (!S.session) return `<div class="note"><b>Sende inn protest?</b><span>Førere <button class="linkbtn inv" data-act="login">logger inn</button> og kobler kontoen til seg selv i førerlisten. Alle kan lese sakene og avgjørelsene.</span></div>`;
-    if (S.myLink && S.myLink.approved) return "";
-    if (S.myLink) return `<div class="note"><b>Venter på godkjenning</b><span>Du har bedt om å bli koblet til <b>${esc(driverName(S.myLink.driver_id, "en fører"))}</b>. En arrangør må godkjenne før du kan sende inn protester.
-      <button class="linkbtn" data-act="cancelLink">Angre</button></span></div>`;
-    const opts = S.drivers.slice().sort((a, b) => a.name.localeCompare(b.name, "nb")).map((d) => `<option value="${esc(d.id)}">${d.num ? "#" + esc(d.num) + " " : ""}${esc(d.name)}</option>`).join("");
-    return `<form class="note linkform" data-form="reqLink"><b>Hvem er du?</b><span>Koble kontoen din til deg selv i førerlisten for å sende inn protester. En arrangør godkjenner koblingen.</span>
-      <select id="linkDrv" required aria-label="Velg deg selv"><option value="">Velg deg selv…</option>${opts}</select><button class="btn sm" type="submit">Be om kobling</button></form>`;
-  }
-
   function caseCard(L, p) {
     const by = driverName(p.by_driver, p.by_name), ag = driverName(p.against_driver, p.against_name);
-    const nb = driverNum(p.by_driver), na = driverNum(p.against_driver);
+    const nb = p.by_num || driverNum(p.by_driver), na = p.against_num || driverNum(p.against_driver);
     const d = p.decision;
     const right = isOpen(p)
       ? `<div><div class="lbl">Status</div>${statusBadge(p)}${p.status === "appealed" && d ? `<div class="small muted dec">Opprinnelig: ${esc(outcomeText(d))}</div>` : ""}</div>`
@@ -565,16 +569,13 @@
     if (f.st === "open") list = list.filter(isOpen); else if (f.st === "done") list = list.filter((p) => !isOpen(p));
     const open = list.filter(isOpen).sort((a, b) => b.no - a.no), done = list.filter((p) => !isOpen(p)).sort((a, b) => b.no - a.no);
     const names = [...new Set(S.protests.flatMap((p) => [driverName(p.by_driver, p.by_name), driverName(p.against_driver, p.against_name)]))].filter(Boolean).sort((a, b) => a.localeCompare(b, "nb"));
-    const me = myDriver();
-    // frist og kvote for siste runde med resultat
+    // frist for siste runde med resultat
     let info = "";
     const last = keys[keys.length - 1];
     if (cfg.enabled && last) {
       const dl = CORE.protestDeadline(L, last.round);
-      if (me) needQuota(L, last.round);
-      const q = S.quota[last.round];
       info = `<div class="note"><b>Frist:</b><span>${dl ? (Date.now() < dl ? `Protester for R${last.round} ${esc(trackOf(L, last.round))} kan sendes inn til <b>${fmtDate(dl, true)}</b>.` : `Fristen for R${last.round} ${esc(trackOf(L, last.round))} gikk ut ${fmtDate(dl, true)}.`) : `Protester sendes inn senest ${cfg.deadlineH} timer etter løpsdagen.`}
-        ${me && q != null ? ` Du har <b>${q} av ${cfg.perRound}</b> protester igjen denne runden.` : ` Hver fører har ${cfg.perRound} protester per runde.`} En protest som fører fram, gis tilbake.</span></div>`;
+        Hver fører har ${cfg.perRound} protester per runde. En protest som fører fram, gis tilbake.</span></div>`;
     }
     const sel = (v, cur) => (String(v) === String(cur) ? "selected" : "");
     return `<div class="viewhead"><div><h2>Protester</h2><p class="muted">Send inn hendelser, og følg stewardenes avgjørelser og anker. Alle kan lese sakene.</p></div></div>
@@ -583,62 +584,70 @@
         <label class="fld"><span>Sak #</span><input data-chg="pf.no" value="${esc(f.no)}" placeholder="f.eks. 12" style="width:100px" inputmode="numeric" /></label>
         <label class="fld"><span>Fører</span><select data-chg="pf.drv"><option value="">Alle førere</option>${names.map((n) => `<option ${sel(n, f.drv)}>${esc(n)}</option>`).join("")}</select></label>
         <label class="fld"><span>Status</span><select data-chg="pf.st"><option value="">Alle saker</option><option value="open" ${sel("open", f.st)}>Til behandling</option><option value="done" ${sel("done", f.st)}>Avgjort</option></select></label>
-        <div class="grow">${cfg.enabled && me ? `<button class="btn primary" data-act="newProtest">+ Send inn protest</button>` : ""}</div>
+        <div class="grow">${anyProtestLeague() ? `<button class="btn primary" data-act="newProtest">+ Send inn protest</button>` : ""}</div>
       </div>
-      ${linkPanel(L)}${info}
-      ${!cfg.enabled ? `<div class="note"><b>Stengt</b><span>Ligaen tar ikke imot nye protester.${S.canWrite ? " Slå det på under Oppsett → Protester." : ""}</span></div>` : ""}
+      ${info}
+      ${!cfg.enabled ? `<div class="note"><b>Stengt</b><span>Denne løpsserien tar ikke imot nye protester.${S.canWrite ? " Slå det på under Oppsett → Protester." : ""}</span></div>` : ""}
       ${open.length ? `<div class="sechead open"><h3>Til behandling · ${open.length}</h3><span class="muted small">Venter på avgjørelse eller ankebehandling</span></div>${open.map((p) => caseCard(L, p)).join("")}` : ""}
       ${done.length ? `<div class="sechead done"><h3>Avgjort · ${done.length}</h3></div>${done.map((p) => caseCard(L, p)).join("")}` : ""}
       ${!list.length ? `<div class="empty"><h3>${S.protests.length ? "Ingen saker passer filteret" : "Ingen protester ennå"}</h3></div>` : ""}`;
   }
 
   function viewProtestForm(L) {
-    const cfg = protestCfg(L), me = myDriver();
-    if (!cfg.enabled || !me) { S.pv.mode = "list"; return viewProtestList(L); }
+    const open = S.leagues.filter((l) => protestCfg(l).enabled);
+    if (!open.length) { S.pv.mode = "list"; return viewProtestList(L); }
+    if (!S.pf) S.pf = { chosen: open.length === 1 && open[0].id === L.id, rid: "", by: "", byNum: "", against: "", againstNum: "", kind: "", lap: "", replay: "", descr: "", video: "" };
+    const F = S.pf, cfg = protestCfg(L);
+    const sel = (v, cur) => (String(v) === String(cur) ? "selected" : "");
+    const leagueSel = `<label class="fld s4"><span>Løpsserie</span><select id="pfLeague" data-chg="pform.league" required class="${F.chosen ? "" : "attn"}">
+        ${F.chosen ? "" : `<option value="">Velg løpsserie…</option>`}${open.map((l) => `<option value="${esc(l.id)}" ${F.chosen && l.id === L.id ? "selected" : ""}>${esc(l.name)}</option>`).join("")}</select></label>`;
+    const head = `<section class="panel pform"><p class="small"><button class="linkbtn" data-act="pList">← Alle protester</button></p>
+      <h2>Send inn protest</h2>
+      <p class="muted small">Du trenger ikke å logge inn. En protest eller anke koster én av førerens ${cfg.perRound} protester for runden. Svar på saker er gratis. En protest som fører fram, gis tilbake. Video legges ved som lenke (YouTube, Streamable, Google Drive e.l.).</p>`;
+    if (!F.chosen || !cfg.enabled) return head + `<form class="formgrid" onsubmit="return false">${leagueSel}<p class="muted s4">Velg løpsserien hendelsen skjedde i. Det finnes flere serier, så sjekk at du velger riktig.</p></form></section>`;
     const keys = raceOpts(L);
-    if (!S.pf) { const last = keys[keys.length - 1]; S.pf = { rid: last ? last.id : "", against: "", kind: cfg.kinds[0] || "", lap: "", replay: "", place: "", descr: "", video: "" }; }
-    const F = S.pf, k = keys.find((x) => x.id === F.rid);
-    if (k) needQuota(L, k.round);
-    const q = k ? S.quota[k.round] : null;
+    if (!F.rid || !keys.find((x) => x.id === F.rid)) F.rid = keys.length ? keys[keys.length - 1].id : "";
+    if (!F.kind) F.kind = cfg.kinds[0] || "";
+    const k = keys.find((x) => x.id === F.rid);
+    const drv = k ? raceDrivers(k.id) : [];
+    if (F.by && !drv.find((d) => d.id === F.by)) F.by = "";
+    if (F.against && !drv.find((d) => d.id === F.against)) F.against = "";
+    if (k && F.by) needQuota(L, k.round, F.by);
+    const q = k && F.by ? S.quota[quotaKey(k.round, F.by)] : null;
     const dl = k ? CORE.protestDeadline(L, k.round) : null;
     const late = dl && Date.now() > dl;
-    const sel = (v, cur) => (String(v) === String(cur) ? "selected" : "");
-    // førere som var med i løpet først
-    const inRace = new Set(k && S.results[k.id] ? (S.results[k.id].rows || []).map((r) => CORE.norm(r.name)) : []);
-    const others = S.drivers.filter((d) => d.id !== me).sort((a, b) => (inRace.has(CORE.norm(b.name)) - inRace.has(CORE.norm(a.name))) || a.name.localeCompare(b.name, "nb"));
-    return `<section class="panel" style="max-width:900px">
-      <p class="small"><button class="linkbtn" data-act="pList">← Alle protester</button></p>
-      <h2>Send inn protest</h2>
-      <p class="muted small">En protest koster én av dine ${cfg.perRound} protester for runden. Svar på saker er gratis. Protester som fører fram, gis tilbake.${dl ? ` Frist: ${fmtDate(dl, true)}.` : ""}</p>
-      <form data-form="protest" class="formgrid" style="margin-top:10px">
-        <label class="fld s2"><span>Løp</span><select id="pfRid" data-chg="pform.rid" required>${keys.map((x) => `<option value="${x.id}" ${sel(x.id, F.rid)}>${esc(x.name)}</option>`).join("")}</select></label>
-        <label class="fld s2"><span>Hendelsestype</span><select id="pfKind" data-chg="pform.kind">${cfg.kinds.map((x) => `<option ${sel(x, F.kind)}>${esc(x)}</option>`).join("")}</select></label>
-        <label class="fld s2"><span>Du (innsender)</span><select disabled><option>${driverNum(me) ? "#" + esc(driverNum(me)) + " " : ""}${esc(driverName(me))}</option></select></label>
-        <label class="fld s2"><span>Protest mot</span><select id="pfAgainst" data-chg="pform.against" required><option value="">Velg fører…</option>${others.map((d) => `<option value="${esc(d.id)}" ${sel(d.id, F.against)}>${d.num ? "#" + esc(d.num) + " " : ""}${esc(d.name)}${k && !inRace.has(CORE.norm(d.name)) ? " (ikke i løpet)" : ""}</option>`).join("")}</select></label>
-        <label class="fld"><span>Runde</span><input id="pfLap" data-chg="pform.lap" type="number" min="0" max="999" value="${esc(F.lap)}" required /></label>
-        <label class="fld"><span>Replay-tid</span><input id="pfReplay" data-chg="pform.replay" class="mono" value="${esc(F.replay)}" placeholder="mm:ss" maxlength="20" required /></label>
-        <label class="fld s2"><span>Sving / sted (valgfritt)</span><input id="pfPlace" data-chg="pform.place" value="${esc(F.place)}" maxlength="80" /></label>
-        <div class="s4 quota"><span>Protester igjen denne runden: <b>${q == null ? "…" : q + " av " + cfg.perRound}</b></span><span>Runde og replay-tid finner du i iRacing-replayen (klokken nederst).</span></div>
+    const opt = (d, cur, skip) => (d.id === skip ? "" : `<option value="${esc(d.id)}" ${sel(d.id, cur)}>${d.num ? "#" + esc(d.num) + " " : ""}${esc(d.name)}</option>`);
+    return head + `<form data-form="protest" class="formgrid">
+        ${leagueSel}
+        <label class="fld s4"><span>Løp</span><select id="pfRid" data-chg="pform.rid" required>${keys.length ? keys.map((x) => `<option value="${x.id}" ${sel(x.id, F.rid)}>${esc(x.name)}</option>`).join("") : `<option value="">Ingen løp med resultat ennå</option>`}</select></label>
+        <label class="fld s4"><span>Din fører</span><select id="pfBy" data-chg="pform.by" required><option value="">Velg deg selv…</option>${drv.map((d) => opt(d, F.by)).join("")}</select></label>
+        <label class="fld s4"><span>Protest mot</span><select id="pfAgainst" data-chg="pform.against" required><option value="">Velg fører…</option>${drv.map((d) => opt(d, F.against, F.by)).join("")}</select></label>
+        <label class="fld s4"><span>Hendelsestype</span><select id="pfKind" data-chg="pform.kind">${cfg.kinds.map((x) => `<option ${sel(x, F.kind)}>${esc(x)}</option>`).join("")}</select></label>
+        <label class="fld s2"><span>Ditt bilnummer</span><input id="pfByNum" data-chg="pform.byNum" value="${esc(F.byNum)}" inputmode="numeric" maxlength="10" /></label>
+        <label class="fld s2"><span>Protestert bilnummer</span><input id="pfAgainstNum" data-chg="pform.againstNum" value="${esc(F.againstNum)}" inputmode="numeric" maxlength="10" /></label>
+        <label class="fld s2"><span>Runde</span><input id="pfLap" data-chg="pform.lap" type="number" min="0" max="999" inputmode="numeric" value="${esc(F.lap)}" required /></label>
+        <label class="fld s2"><span>Replay-tid</span><input id="pfReplay" data-chg="pform.replay" class="mono" value="${esc(F.replay)}" placeholder="mm:ss" maxlength="20" required /></label>
+        <div class="s4 quota"><span>Protester igjen i runden: <b>${!F.by ? "velg fører" : q == null ? "…" : q + " av " + cfg.perRound}</b></span><span>Runde og replay-tid finner du i iRacing-replayen (klokken nederst).</span></div>
         <label class="fld s4"><span>Beskrivelse</span><textarea id="pfDescr" data-chg="pform.descr" maxlength="4000" required placeholder="Kort og saklig: hva skjedde, og hvem gjorde hva?">${esc(F.descr)}</textarea></label>
-        <label class="fld s4"><span>Video${cfg.video === "req" ? "" : " (valgfritt)"}</span><input id="pfVideo" data-chg="pform.video" type="url" value="${esc(F.video)}" placeholder="Lenke til YouTube, Streamable eller Google Drive" ${cfg.video === "req" ? "required" : ""} maxlength="500" />
-          <span class="hint">Må være en video som kan spilles av, ikke en iRacing-replayfil. Vis gjerne både cockpit og TV-kamera. Sett delingen til «alle med lenken».</span></label>
+        <label class="fld s4"><span>Video${cfg.video === "req" ? "" : " (valgfritt)"}</span><input id="pfVideo" data-chg="pform.video" type="url" value="${esc(F.video)}" placeholder="https://youtu.be/…" ${cfg.video === "req" ? "required" : ""} maxlength="500" />
+          <span class="hint">Lenke til en video som kan spilles av (YouTube, Streamable, Google Drive), ikke en iRacing-replayfil. Sett delingen til «alle med lenken».</span></label>
+        <label class="hp" aria-hidden="true">Nettside <input id="pfWebsite" tabindex="-1" autocomplete="off" /></label>
         ${late ? `<p class="error s4">Protestfristen for dette løpet gikk ut ${fmtDate(dl, true)}.</p>` : ""}
-        ${q === 0 ? `<p class="error s4">Du har ingen protester igjen i denne runden.</p>` : ""}
-        <div class="row s4" style="justify-content:flex-end"><button class="btn ghost" type="button" data-act="pList">Avbryt</button><button class="btn primary" type="submit" ${late || q === 0 || S.busy === "protest" ? "disabled" : ""}>${S.busy === "protest" ? "Sender…" : "Send inn protest"}</button></div>
+        ${q === 0 ? `<p class="error s4">${esc(driverName(F.by))} har ingen protester igjen i denne runden.</p>` : ""}
+        <div class="row s4 formbtns"><button class="btn primary" type="submit" ${late || q === 0 || !k || S.busy === "protest" ? "disabled" : ""}>${S.busy === "protest" ? "Sender…" : "Send inn protest"}</button><button class="btn ghost" type="button" data-act="pList">Avbryt</button></div>
       </form></section>`;
   }
 
   function viewCase(L, p) {
-    const cfg = protestCfg(L), me = myDriver();
     const by = driverName(p.by_driver, p.by_name), ag = driverName(p.against_driver, p.against_name);
-    const nb = driverNum(p.by_driver), na = driverNum(p.against_driver);
+    const nb = p.by_num || driverNum(p.by_driver), na = p.against_num || driverNum(p.against_driver);
     const d = p.decision;
-    const party = me && (me === p.by_driver || me === p.against_driver);
     const evs = S.pevents.filter((e) => e.protest_id === p.id);
-    const canAppeal = party && p.status === "decided" && p.appeal_until && Date.now() < new Date(p.appeal_until).getTime();
-    const canRespond = party && isOpen(p);
-    if (party) needQuota(L, p.round);
+    const canAppeal = p.status === "decided" && p.appeal_until && Date.now() < new Date(p.appeal_until).getTime();
+    const canRespond = isOpen(p);
     const R = S.reply && S.reply.id === p.id ? S.reply : null;
+    if (R && R.kind === "appeal" && R.driver) needQuota(L, p.round, R.driver);
+    const rq = R && R.driver ? S.quota[quotaKey(p.round, R.driver)] : null;
     const kindName = { submitted: "Protest sendt inn", response: "Svar / nytt bevis", appeal: "Anke sendt inn", review: "Under behandling", decision: "Avgjørelse publisert", refund: "Protest gitt tilbake", closed: "Saken er lukket", reopened: "Saken er gjenåpnet", note: "Notat" };
     const decBox = d ? `<div class="decision ${p.status === "appealed" ? "old" : ""}">
         <h3>${p.status === "appealed" ? "Avgjørelse (anket)" : "Stewardenes avgjørelse"}</h3>
@@ -653,12 +662,15 @@
         ${isOpen(p) ? `<button class="btn sm primary" data-act="pDecide">${d && p.status !== "appealed" ? "Endre avgjørelse" : "Avgjør sak"}</button>` : ""}
         ${p.status === "decided" ? `<button class="btn sm" data-act="pStatus" data-v="closed">Lukk sak</button>` : ""}
         ${isDone(p) ? `<button class="btn sm" data-act="pStatus" data-v="reopened">Gjenåpne</button>` : ""}
+        ${S.canWrite ? (S.confirm === "delCase:" + p.id ? `<span class="confirm">Slette saken for godt? <button class="btn sm danger" data-act="delCase">Slett</button><button class="btn sm ghost" data-act="cancelConfirm">Avbryt</button></span>` : `<button class="btn sm ghost" data-act="askDelCase" title="For spam eller feil innsending">Slett sak</button>`) : ""}
         ${isDone(p) && d && d.outcome === "pen" && d.apply ? `<p class="muted small" style="width:100%;margin:0">Gjenåpner du saken, tas straffen ut av resultatet til saken er avgjort på nytt.</p>` : ""}</div>` : "";
     const replyForm = R ? `<form class="panel" data-form="reply"><h3>${R.kind === "appeal" ? "Anke avgjørelsen" : "Legg til svar eller bevis"}</h3>
-        <p class="muted small">${R.kind === "appeal" ? `En anke koster én protest (du har ${S.quota[p.round] == null ? "…" : S.quota[p.round]} igjen i runden), og gis tilbake hvis den fører fram. Anken vises i sakshistorikken.` : "Gratis. Bare stewards ser svaret ditt."}</p>
-        <label class="fld"><span>Tekst</span><textarea id="rpText" required maxlength="4000" style="font-family:var(--body);font-size:15px;min-height:100px"></textarea></label>
-        <label class="fld"><span>Video (valgfritt)</span><input id="rpVideo" type="url" maxlength="500" placeholder="Lenke til YouTube, Streamable e.l." /></label>
-        <div class="row" style="justify-content:flex-end"><button class="btn ghost" type="button" data-act="replyCancel">Avbryt</button><button class="btn primary" type="submit" ${S.busy === "reply" || (R.kind === "appeal" && S.quota[p.round] === 0) ? "disabled" : ""}>${R.kind === "appeal" ? "Send anke" : "Send"}</button></div></form>` : "";
+        <p class="muted small">${R.kind === "appeal" ? `En anke koster én protest${R.driver ? ` (${esc(driverName(R.driver))} har ${rq == null ? "…" : rq} igjen i runden)` : ""}, og gis tilbake hvis den fører fram. Anken vises i sakshistorikken.` : "Gratis. Bare stewards ser svaret."} Bare de to førerne i saken kan svare eller anke.</p>
+        <label class="fld"><span>Hvem er du?</span><select id="rpDriver" data-chg="reply.driver" required><option value="">Velg…</option>
+          ${[[p.by_driver, by], [p.against_driver, ag]].filter((x) => x[0]).map(([id, n]) => `<option value="${esc(id)}" ${R.driver === id ? "selected" : ""}>${esc(n)}</option>`).join("")}</select></label>
+        <label class="fld"><span>Tekst</span><textarea id="rpText" required maxlength="4000" style="font-family:var(--body);font-size:15px;min-height:100px">${esc(R.text || "")}</textarea></label>
+        <label class="fld"><span>Video (valgfritt)</span><input id="rpVideo" type="url" maxlength="500" placeholder="Lenke til YouTube, Streamable e.l." value="${esc(R.video || "")}" /></label>
+        <div class="row" style="justify-content:flex-end"><button class="btn ghost" type="button" data-act="replyCancel">Avbryt</button><button class="btn primary" type="submit" ${S.busy === "reply" || (R.kind === "appeal" && rq === 0) ? "disabled" : ""}>${R.kind === "appeal" ? "Send anke" : "Send"}</button></div></form>` : "";
     return `<div class="viewhead"><div><p class="small"><button class="linkbtn" data-act="pList">← Alle protester</button></p>
         <h2>Sak #${p.no} · R${p.round} ${esc(raceLabel(L, p.race))}</h2><p class="muted">Sendt inn ${fmtDate(p.created_at, true)}</p></div><div class="tools">${statusBadge(p)}</div></div>
       <div class="detail"><div>
@@ -856,16 +868,7 @@
         <td class="act">${conf ? `<button class="btn sm danger" data-act="delDrv" data-id="${d.id}">Slett</button><button class="btn sm ghost" data-act="cancelConfirm">Avbryt</button>` : `<button class="btn sm ghost" data-act="askDelDrv" data-id="${d.id}" aria-label="Slett ${esc(d.name)}">Slett</button>`}</td></tr>`
         : `<tr><td class="num">${esc(d.num || "")}</td><td class="name">${esc(d.name)}</td><td><span class="div d${d.div || 1}">${d.div || 1}</span></td><td class="num">${counts[CORE.norm(d.name)] || 0}</td><td></td></tr>`;
     }).join("");
-    let linkBox = "";
-    if (S.canWrite && protestsOn(L) && S.links) {
-      const pend = S.links.filter((x) => !x.approved), okd = S.links.filter((x) => x.approved);
-      const li = (x, pending) => `<li><span><b>${esc(driverName(x.driver_id, "(slettet fører)"))}</b> <span class="muted">${esc(x.email)}</span></span>
-        <span>${pending ? `<button class="btn sm primary" data-act="approveLink" data-uid="${esc(x.user_id)}" data-ok="1">Godkjenn</button> ` : ""}<button class="btn sm ghost" data-act="approveLink" data-uid="${esc(x.user_id)}" data-ok="0">${pending ? "Avvis" : "Fjern"}</button></span></li>`;
-      linkBox = `<section class="panel"><h3>Førerkontoer</h3><p class="muted small">Førere som har logget inn og bedt om å bli koblet til seg selv. Bare godkjente førere kan sende inn protester. Sjekk at e-postadressen hører til føreren.</p>
-        ${pend.length ? `<div class="lbl" style="margin-top:8px">Venter på godkjenning · ${pend.length}</div><ul class="admins">${pend.map((x) => li(x, true)).join("")}</ul>` : `<p class="small muted">Ingen nye forespørsler.</p>`}
-        ${okd.length ? `<details><summary class="small">Godkjente kontoer (${okd.length})</summary><ul class="admins">${okd.map((x) => li(x, false)).join("")}</ul></details>` : ""}</section>`;
-    }
-    return `${linkBox}<div class="viewhead"><div><h2>Førere</h2><p class="muted">${S.drivers.length} førere · ${n2} i ${esc(d2n)}. Nye førere legges til automatisk ved import.</p></div>
+    return `<div class="viewhead"><div><h2>Førere</h2><p class="muted">${S.drivers.length} førere · ${n2} i ${esc(d2n)}. Nye førere legges til automatisk ved import.</p></div>
       <div class="tools"><input type="search" id="q" placeholder="Søk etter fører" value="${esc(S.q)}" data-inp="q" aria-label="Søk" /></div></div>
       ${S.canWrite ? `<form class="addrow" data-form="addDrv"><input id="adNum" placeholder="#" class="num" aria-label="Bilnummer" /><input id="adName" placeholder="Navn, slik det står i iRacing" required aria-label="Navn" />
         <select id="adDiv" aria-label="Divisjon"><option value="1">Div 1</option><option value="2">Div 2</option></select><button class="btn" type="submit">Legg til fører</button></form>` : ""}
@@ -895,9 +898,9 @@
         <p class="muted small">Fristen regnes fra midnatt etter datoen som står på runden under Runder. Runder uten dato har ingen frist.</p>
         <label class="fld"><span>Hendelsestyper (én per linje)</span><textarea rows="7" data-dr="protests.kindsText">${esc(P.kinds.join("\n"))}</textarea></label></section>
       <section class="panel"><h3>Stewards</h3><p class="muted small">Stewards kan behandle og avgjøre protester, men ikke endre oppsett eller importere resultater. Arrangører kan også avgjøre protester.</p>
-        ${S.stewards ? (S.stewards.length ? `<ul class="admins">${S.stewards.map((a) => `<li><span>${esc(a.email)}</span><button class="btn sm ghost" data-act="rmSteward" data-email="${esc(a.email)}">Fjern</button></li>`).join("")}</ul>` : `<p class="small muted">Ingen stewards ennå.</p>`) : `<p class="muted small">Henter…</p>`}
+        ${S.stewards ? (S.stewards.length ? `<ul class="admins">${S.stewards.map((a) => `<li><span>${esc(a.email)}</span><span class="acts"><button class="btn sm ghost" data-act="pwFor" data-email="${esc(a.email)}" title="Send lenke eller sett passord">Passord</button><button class="btn sm ghost" data-act="rmSteward" data-email="${esc(a.email)}">Fjern</button></span></li>`).join("")}</ul>` : `<p class="small muted">Ingen stewards ennå.</p>`) : `<p class="muted small">Henter…</p>`}
         <form data-form="addSteward" class="addrow"><input id="stewardEmail" type="email" placeholder="e-post til ny steward" required aria-label="E-post" /><button class="btn" type="submit">Legg til</button></form>
-        <p class="muted small">Stewarden logger inn med samme e-postadresse. Førere kobler kontoen sin til seg selv under Protester, og du godkjenner under Førere.</p></section>`;
+        <p class="muted small">Stewarden logger inn med samme e-postadresse. Førere sender inn protester uten å logge inn.</p></section>`;
     return `<div class="viewhead"><div><h2>Oppsett</h2><p class="muted">Endringer gjelder alle i arrangørgruppa når du trykker Lagre.</p></div>
       <div class="tools"><button class="btn primary" data-act="saveSetup">Lagre oppsett</button></div></div>
       <div class="setup">
@@ -924,10 +927,18 @@
         <p class="muted small">Divisjon hentes fra «Car Class ID» i resultatfilen når den finnes (1 = Div 1, 2 = Div 2). Ellers brukes divisjonen i førerlisten.</p></section>
       <section class="panel"><h3>Arrangører</h3><p class="muted small">Disse kan logge inn og importere, redigere og slette i alle ligaer.</p>
         ${S.admins ? `<ul class="admins">${S.admins.map((a) => { const me = S.session && a.email === (S.session.user.email || "").toLowerCase();
-          return `<li><span>${esc(a.email)}${me ? ` <span class="tag">deg</span>` : ""}</span>${me ? "" : `<button class="btn sm ghost" data-act="rmAdmin" data-email="${esc(a.email)}">Fjern</button>`}</li>`; }).join("")}</ul>`
+          return `<li><span>${esc(a.email)}${me ? ` <span class="tag">deg</span>` : ""}</span>${me ? "" : `<span class="acts"><button class="btn sm ghost" data-act="pwFor" data-email="${esc(a.email)}" title="Send lenke eller sett passord">Passord</button><button class="btn sm ghost" data-act="rmAdmin" data-email="${esc(a.email)}">Fjern</button></span>`}</li>`; }).join("")}</ul>`
           : `<p class="muted small">Henter…</p>`}
         <form data-form="addAdmin" class="addrow"><input id="adminEmail" type="email" placeholder="e-post til ny arrangør" required aria-label="E-post" /><button class="btn" type="submit">Legg til</button></form>
         <p class="muted small">Den nye arrangøren logger inn med samme e-postadresse.</p></section>
+      <section class="panel" id="pwPanel"><h3>Passord for brukere</h3>
+        <p class="muted small">Hjelp en arrangør eller steward som har glemt passordet. Send en lenke på e-post, eller sett et midlertidig passord og gi det til personen. Finnes ingen konto med e-posten, opprettes den.</p>
+        <form data-form="adminPw" class="stack">
+          <label class="fld"><span>E-post</span><input id="apEmail" type="email" required autocomplete="off" value="${esc(S.pwEmail || "")}" /></label>
+          <label class="fld"><span>Midlertidig passord (minst 8 tegn)</span><span class="pwrow"><input id="apPw" type="text" minlength="8" autocomplete="new-password" spellcheck="false" /><button class="btn sm ghost" type="button" data-act="genPw">Lag forslag</button></span></label>
+          <div class="row"><button class="btn" type="submit" data-v="link">Send lenke for nytt passord</button><button class="btn primary" type="submit" data-v="set">Sett passordet</button></div>
+        </form>
+        <p class="muted small">Supabase sender bare noen få e-poster i timen med den innebygde e-posttjenesten. Med midlertidig passord kan personen logge inn med en gang, og bytte passord ved å trykke på e-postadressen sin øverst.</p></section>
       ${protestPanels}
       <section class="panel danger"><h3>Slett liga</h3><p class="muted small">Sletter oppsett, førere og alle resultater for «${esc(L.name)}» for alle i gruppa.</p>
         ${conf ? `<span class="confirm">Er du sikker? <button class="btn sm danger" data-act="delLeague">Slett ligaen</button><button class="btn sm ghost" data-act="cancelConfirm">Avbryt</button></span>` : `<button class="btn sm ghost" data-act="askDelLeague">Slett liga</button>`}</section>
@@ -980,7 +991,8 @@
   const ACT = {
     home: () => { S.login = false; S.newLeague = false; S.confirm = null; S.tab = "standings"; render(); window.scrollTo(0, 0); },
     login: () => { S.login = true; S.loginMode = "in"; S.loginSent = ""; render(); },
-    closeLogin: () => { S.login = false; render(); },
+    closeLogin: () => { S.login = false; S.changePw = false; render(); },
+    changePw: () => { S.login = true; S.loginMode = "newpw"; S.changePw = true; render(); },
     loginMode: (b) => { const e = $("#loginEmail"); if (e) S.loginEmail = e.value.trim(); S.loginMode = b.dataset.v; render(); },
     logout: async () => { await S.sb.auth.signOut(); S.session = null; S.canWrite = false; if (["import", "setup"].includes(S.tab)) S.tab = "standings"; render(); },
     rmAdmin: async (b) => { const ok = await write(() => DATA.removeAdmin(b.dataset.email), "Arrangøren er fjernet."); if (ok) { S.admins = null; render(); } },
@@ -1013,10 +1025,15 @@
       const p = findCase(b.dataset.no); if (!p) return toast("Fant ikke sak #" + b.dataset.no + ".", "err");
       S.tab = "protests"; S.pv.mode = "case"; S.pv.id = p.id; S.reply = null; S.dec = null; render(); window.scrollTo(0, 0);
     },
+    askDelCase: () => { S.confirm = "delCase:" + S.pv.id; render(); },
+    delCase: async () => {
+      const L = league(), id = S.pv.id; S.confirm = null;
+      const ok = await write(() => DATA.deleteProtest(id), "Saken er slettet.");
+      if (ok) { await loadProtestData(L.id); S.pv.mode = "list"; S.pv.id = null; } render();
+    },
     pList: () => { S.pv.mode = "list"; S.pv.id = null; S.reply = null; render(); window.scrollTo(0, 0); },
-    newProtest: () => { S.pv.mode = "new"; render(); window.scrollTo(0, 0); },
+    newProtest: () => { S.pv.mode = "new"; S.pf = null; render(); window.scrollTo(0, 0); },
     pFilterDrv: (b) => { S.tab = "protests"; S.pv = { mode: "list", id: null, f: { rid: "", no: "", drv: b.dataset.name, st: "" } }; render(); window.scrollTo(0, 0); },
-    cancelLink: async () => { const L = league(); await write(() => DATA.cancelLink(L.id), "Forespørselen er trukket."); await loadLinks(L.id); render(); },
     reply: (b) => { S.reply = { id: S.pv.id, kind: b.dataset.v }; render(); const t = $("#rpText"); if (t) t.focus(); },
     replyCancel: () => { S.reply = null; render(); },
     pDecide: () => { S.pv.mode = "decide"; S.dec = null; render(); window.scrollTo(0, 0); },
@@ -1035,7 +1052,15 @@
       }, { review: "Saken er merket som under behandling.", closed: "Saken er lukket.", reopened: "Saken er gjenåpnet." }[v]);
       await loadProtestData(L.id); render();
     },
-    approveLink: async (b) => { const L = league(); await write(() => DATA.approveLink(L.id, b.dataset.uid, b.dataset.ok === "1"), b.dataset.ok === "1" ? "Koblingen er godkjent." : "Koblingen er fjernet."); await loadLinks(L.id); render(); },
+    pwFor: (b) => {
+      S.pwEmail = b.dataset.email;
+      if (S.tab !== "setup") { S.tab = "setup"; render(); }
+      const e = $("#apEmail"); if (e) { e.value = b.dataset.email; $("#pwPanel").scrollIntoView({ behavior: "smooth", block: "center" }); const p = $("#apPw"); if (p) p.focus(); }
+    },
+    genPw: () => {
+      const abc = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789", a = new Uint32Array(12); crypto.getRandomValues(a);
+      const p = $("#apPw"); if (p) p.value = [...a].map((x) => abc[x % abc.length]).join("");
+    },
     rmSteward: async (b) => { const ok = await write(() => DATA.removeSteward(b.dataset.email), "Stewarden er fjernet."); if (ok) { S.stewards = null; render(); } },
     addRace: () => { const D = S.draft; let k = "R" + (D.races.length + 1); while (D.races.find((r) => r.key === k)) k += "x"; D.races.push({ key: k, label: "Race " + (D.races.length + 1), short: "R" + (D.races.length + 1) }); render(); },
     rmRace: (b) => { S.draft.races.splice(+b.dataset.i, 1); render(); },
@@ -1098,25 +1123,23 @@
       const { error } = await S.sb.auth.updateUser({ password });
       S.busy = "";
       if (error) { toast(authErr(error), "err"); render(); return; }
-      S.login = false; S.loginMode = "in"; toast("Passordet er lagret."); checkAdmin(); return;
-    }
-    if (f.dataset.form === "reqLink") {
-      const L = league(), v = $("#linkDrv").value; if (!v) return;
-      const ok = await write(() => DATA.requestLink(L.id, v), "Forespørselen er sendt. En arrangør må godkjenne den.");
-      if (ok) { await loadLinks(L.id); render(); }
-      return;
+      S.login = false; S.loginMode = "in"; S.changePw = false; toast("Passordet er lagret."); checkAdmin(); return;
     }
     if (f.dataset.form === "protest") {
       const L = league(), F = S.pf; if (!L || !F) return;
       const val = (id) => ($("#" + id) ? $("#" + id).value.trim() : "");
-      Object.assign(F, { rid: val("pfRid"), against: val("pfAgainst"), kind: val("pfKind"), lap: val("pfLap"), replay: val("pfReplay"), place: val("pfPlace"), descr: val("pfDescr"), video: val("pfVideo") });
+      if (val("pfWebsite")) return; // skjult felt som bare roboter fyller ut
+      Object.assign(F, { rid: val("pfRid"), by: val("pfBy"), byNum: val("pfByNum"), against: val("pfAgainst"), againstNum: val("pfAgainstNum"), kind: val("pfKind"),
+        lap: val("pfLap"), replay: val("pfReplay"), descr: val("pfDescr"), video: val("pfVideo") });
       const k = CORE.raceKeys(L).find((x) => x.id === F.rid);
       if (!k) return toast("Velg løpet.", "err");
+      if (!F.by) return toast("Velg deg selv under «Din fører».", "err");
       if (!F.against) return toast("Velg føreren du protesterer mot.", "err");
       if (F.video && !safeUrl(F.video)) return toast("Videolenken må begynne med https://", "err");
       S.busy = "protest"; render();
       let no = null;
-      const ok = await write(async () => { no = await DATA.fileProtest(L.id, { round: k.round, race: k.race, against: F.against, kind: F.kind, lap: F.lap === "" ? null : +F.lap, replay: F.replay, place: F.place, descr: F.descr, video: F.video }); }, null);
+      const ok = await write(async () => { no = await DATA.fileProtest(L.id, { round: k.round, race: k.race, by: F.by, byNum: F.byNum, against: F.against, againstNum: F.againstNum,
+        kind: F.kind, lap: F.lap === "" ? null : +F.lap, replay: F.replay, descr: F.descr, video: F.video }); }, null);
       S.busy = "";
       if (ok) {
         toast("Protesten er sendt inn som sak #" + no + ".");
@@ -1127,11 +1150,12 @@
     }
     if (f.dataset.form === "reply") {
       const L = league(), R = S.reply; if (!R) return;
-      const text = $("#rpText").value.trim(), video = $("#rpVideo").value.trim();
+      const text = $("#rpText").value.trim(), video = $("#rpVideo").value.trim(), drv = $("#rpDriver").value;
+      if (!drv) return toast("Velg hvem du er.", "err");
       if (!text) return toast("Skriv en tekst.", "err");
       if (video && !safeUrl(video)) return toast("Videolenken må begynne med https://", "err");
       S.busy = "reply"; render();
-      const ok = await write(() => DATA.protestReply(R.id, R.kind, text, video), R.kind === "appeal" ? "Anken er sendt inn." : "Svaret er sendt til stewards.");
+      const ok = await write(() => DATA.protestReply(R.id, drv, R.kind, text, video), R.kind === "appeal" ? "Anken er sendt inn." : "Svaret er sendt til stewards.");
       S.busy = "";
       if (ok) { S.reply = null; S.quota = {}; await loadProtestData(L.id); }
       render(); return;
@@ -1165,6 +1189,20 @@
       S.busy = "";
       if (ok) { S.dec = null; await loadProtestData(L.id); S.pv.mode = "case"; window.scrollTo(0, 0); }
       render(); return;
+    }
+    if (f.dataset.form === "adminPw") {
+      const email = $("#apEmail").value.trim(), pw = $("#apPw").value, how = (e.submitter && e.submitter.dataset.v) || "set";
+      S.pwEmail = email; if (!email) return;
+      if (how === "link") {
+        await write(() => DATA.sendReset(email, location.origin + location.pathname), "Lenken er sendt til " + email + ", hvis kontoen finnes.");
+        return;
+      }
+      if (pw.length < 8) { toast("Passordet må ha minst 8 tegn. Trykk «Lag forslag» for et tilfeldig passord.", "err"); return; }
+      const cfg = window.CSL_CONFIG || {};
+      let res = "";
+      const ok = await write(async () => { res = await DATA.setPassword(email, pw, cfg.supabaseUrl, cfg.supabaseAnonKey); }, null);
+      if (ok) { toast(res === "created" ? "Kontoen er opprettet med passordet. Gi det til personen." : "Passordet er satt. Gi det til personen."); $("#apPw").value = ""; }
+      return;
     }
     if (f.dataset.form === "addSteward") {
       const email = $("#stewardEmail").value.trim(); if (!email) return;
@@ -1205,7 +1243,18 @@
     if (!c) return;
     if (c === "league") { selectLeague(t.value); return; }
     if (c.startsWith("pf.")) { S.pv.f[c.slice(3)] = t.value; render(); return; }
-    if (c.startsWith("pform.") && S.pf) { S.pf[c.slice(6)] = t.value; if (c === "pform.rid") render(); return; }
+    if (c === "pform.league") {
+      const keep = { ...(S.pf || {}), chosen: true, rid: "", by: "", byNum: "", against: "", againstNum: "", kind: "" };
+      if (t.value !== S.lid) await selectLeague(t.value);
+      S.tab = "protests"; S.pv.mode = "new"; S.pf = keep; render(); return;
+    }
+    if (c.startsWith("pform.") && S.pf) {
+      const k = c.slice(6); S.pf[k] = t.value;
+      if (k === "by" || k === "against") { const d = raceDrivers(S.pf.rid).find((x) => x.id === t.value); S.pf[k + "Num"] = d ? d.num : ""; }
+      if (["rid", "by", "against"].includes(k)) render();
+      return;
+    }
+    if (c === "reply.driver" && S.reply) { S.reply.driver = t.value; S.reply.text = $("#rpText").value; S.reply.video = $("#rpVideo").value; render(); return; }
     if (c.startsWith("dec.") && S.dec) {
       const k = c.slice(4); S.dec[k] = t.type === "checkbox" ? t.checked : t.value;
       if (["driver", "penV", "apply"].includes(k)) render();

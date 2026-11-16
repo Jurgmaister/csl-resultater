@@ -30,9 +30,18 @@ I Supabase: **Authentication → Sign In / Providers → Email** – slå av *Co
 arrangører lage passord uten å vente på e-post. «Glemt passord?» sender fortsatt en e-post, og
 Supabase sin innebygde e-post tillater bare noen få slike i timen.
 
+### Glemt passord
+- «Glemt passord?» sender en lenke på e-post. Lenken åpner siden med et skjema for nytt passord.
+  Adressen til siden må stå under *Redirect URLs* i Supabase (se Oppsett over).
+- Arrangører kan hjelpe under **Oppsett → Passord for brukere**: sende lenken på nytt, eller sette et
+  midlertidig passord som de gir til personen. Finnes ingen konto, opprettes den. Det krever at
+  `supabase/passord.sql` er kjørt i Supabase én gang.
+- Innloggede bytter passord ved å trykke på e-postadressen sin øverst til høyre.
+
 ## Protester
-Førere kan sende inn protester på hendelser, og stewards avgjør dem. Alle kan lese sakene og avgjørelsene
-under fanen **Protester**.
+Førere sender inn protester uten å logge inn, og stewards avgjør dem. Alle kan lese sakene og avgjørelsene
+under fanen **Protester**. Direktelenke til skjemaet (fin å legge i Discord):
+`https://jurgmaister.github.io/csl-resultater/#protest`
 
 Slik slår du det på:
 1. Kjør `supabase/protester.sql` i Supabase (**SQL Editor → New query → lim inn → Run**). Den er også
@@ -41,11 +50,16 @@ Slik slår du det på:
    runde og hendelsestyper. Sett dato på rundene under **Runder**. Fristen regnes fra midnatt etter løpsdagen.
 3. **Oppsett → Stewards**: legg til e-posten til dem som skal avgjøre saker (arrangører kan også).
 
-Førere logger inn (første gang: «Første gang? Lag passord»), velger seg selv i førerlisten under
-Protester, og en arrangør godkjenner koblingen under **Førere**. Deretter kan de:
-- sende inn en protest med løp, fører, runde, replay-tid, beskrivelse og lenke til video
+I skjemaet velger føreren først løpsserie, deretter løp. Førerlistene hentes fra resultatfilen for
+løpet (de som står i standings), og bilnummeret fylles ut automatisk. Førere kan:
+- sende inn en protest med løp, egen fører, fører det protesteres mot, hendelsestype, bilnumre,
+  runde, replay-tid, beskrivelse og lenke til video
 - legge til svar eller nytt bevis før saken er avgjort (bare stewards ser det)
 - anke en avgjørelse innen ankefristen
+
+Siden ingen logger inn, kan i prinsippet hvem som helst sende inn i en førers navn. Databasen sjekker
+at begge førerne var med i løpet, fristen og antall protester. Arrangører kan slette saker som er
+spam eller feil.
 
 En protest eller anke koster én av førerens protester for runden, og gis tilbake hvis den fører fram.
 
@@ -64,3 +78,4 @@ legger sekunder til tiden og kan endre plasseringene. Mens saker er åpne, er re
 | `js/config.js` | Supabase-adresse og offentlig nøkkel |
 | `supabase/schema.sql` | Tabeller og tilgangsregler |
 | `supabase/protester.sql` | Tabeller og funksjoner for protestsystemet (kjøres én gang i eksisterende prosjekt) |
+| `supabase/passord.sql` | Funksjon som lar arrangører sette passord på brukere (kjøres én gang i eksisterende prosjekt) |

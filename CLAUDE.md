@@ -25,6 +25,11 @@ siste først når noen eksporterer.
 | `js/config.js` | Supabase-adresse og publishable key (offentlige, trygge i koden) |
 | `supabase/schema.sql` | Tabeller, tilgangsregler (RLS) og sanntid |
 | `supabase/protester.sql` | Protestsystemet alene (samme innhold som nederst i `schema.sql`), for eksisterende prosjekt |
+| `supabase/passord.sql` | `admin_set_password()`: arrangør setter passord på en konto (samme innhold som nederst i `schema.sql`) |
+
+Innlogging: `onAuthStateChange` må registreres rett etter `createClient`, ellers går `PASSWORD_RECOVERY`
+fra «Glemt passord?»-lenken tapt. Arrangører lager kontoer for andre med en egen klient
+(`persistSession: false`), slik at de selv ikke blir logget ut.
 | `assets/csl-logo.jpg` | CSL-logoen (vikinghode) |
 
 ## Databasen
@@ -35,11 +40,11 @@ løpstid i `data` jsonb) og `admins` (e-post for arrangører).
 Alle kan lese. Bare innloggede som står i `admins` (sjekkes med `is_admin()`) kan skrive.
 
 Protester: `protests` (sak per liga med løpende `no`, `decision` jsonb), `protest_events` (sakshistorikk;
-`private` = bare stewards og forfatteren ser den; `token` -1/+1 teller protester per fører per runde),
-`driver_links` (innlogget bruker ↔ fører, godkjennes av arrangør) og `stewards` (`is_steward()` = arrangør
-eller steward). Stewards skriver direkte i `protests`/`protest_events`. Førere skriver bare via
-funksjonene `file_protest` og `protest_reply`, som sjekker kobling, frist, video og antall protester.
-Oppsettet ligger i `leagues.config.protests` (`CORE.protestDefaults`).
+`private` = bare stewards ser den; `token` -1/+1 teller protester per fører per runde) og `stewards`
+(`is_steward()` = arrangør eller steward). Førere logger ikke inn: de skriver bare via funksjonene
+`file_protest` og `protest_reply` (åpne for `anon`), som sjekker at førerne var med i løpet, frist,
+video og antall protester (`protest_quota`). Stewards skriver direkte i `protests`/`protest_events`.
+Oppsettet ligger i `leagues.config.protests` (`CORE.protestDefaults`). `#protest` i adressen åpner skjemaet.
 Endringer i skjemaet må kjøres manuelt i Supabase SQL Editor og legges inn i `supabase/schema.sql`.
 Legg aldri inn `service_role`- eller secret-nøkkelen, og ingen e-postadresser, i koden.
 

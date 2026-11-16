@@ -94,33 +94,19 @@ const DATA = (() => {
     err(error); return data || [];
   }
   async function isSteward() { const { data, error } = await sb.rpc("is_steward"); if (error) return false; return !!data; }
-  async function myLink(lid) {
-    const { data: u } = await sb.auth.getUser(); const uid = u && u.user && u.user.id; if (!uid) return null;
-    const { data, error } = await sb.from("driver_links").select("driver_id,approved,created_at").eq("league_id", lid).eq("user_id", uid).maybeSingle();
-    if (missing(error)) return null; err(error); return data || null;
-  }
-  async function quota(lid, round) { const { data, error } = await sb.rpc("protest_quota", { p_league: lid, p_round: round }); err(error); return data; }
-  async function requestLink(lid, driverId) { const { error } = await sb.from("driver_links").insert({ league_id: lid, driver_id: driverId }); err(error); onWrite("links"); }
-  async function cancelLink(lid) {
-    const { data: u } = await sb.auth.getUser(); const uid = u && u.user && u.user.id;
-    const { error } = await sb.from("driver_links").delete().eq("league_id", lid).eq("user_id", uid); err(error); onWrite("links");
-  }
-  async function listLinks(lid) {
-    const { data, error } = await sb.from("driver_links").select("user_id,driver_id,email,approved,created_at").eq("league_id", lid).order("created_at");
-    if (missing(error)) return []; err(error); return data || [];
-  }
-  async function approveLink(lid, userId, ok) {
-    const q = ok ? sb.from("driver_links").update({ approved: true }) : sb.from("driver_links").delete();
-    const { error } = await q.eq("league_id", lid).eq("user_id", userId); err(error); onWrite("links");
+  async function quota(lid, round, driverId) {
+    const { data, error } = await sb.rpc("protest_quota", { p_league: lid, p_round: round, p_driver: driverId }); err(error); return data;
   }
   async function fileProtest(lid, f) {
-    const { data, error } = await sb.rpc("file_protest", { p_league: lid, p_round: f.round, p_race: f.race, p_against: f.against, p_kind: f.kind,
-      p_lap: f.lap, p_replay: f.replay, p_place: f.place, p_descr: f.descr, p_video: f.video });
+    const { data, error } = await sb.rpc("file_protest", { p_league: lid, p_round: f.round, p_race: f.race, p_by: f.by, p_by_num: f.byNum || "",
+      p_against: f.against, p_against_num: f.againstNum || "", p_kind: f.kind, p_lap: f.lap, p_replay: f.replay, p_place: f.place || "",
+      p_descr: f.descr, p_video: f.video });
     err(error); onWrite("protests"); return data;
   }
-  async function protestReply(pid, kind, text, video) {
-    const { error } = await sb.rpc("protest_reply", { p_protest: pid, p_kind: kind, p_text: text, p_video: video || "" }); err(error); onWrite("protests");
+  async function protestReply(pid, driverId, kind, text, video) {
+    const { error } = await sb.rpc("protest_reply", { p_protest: pid, p_driver: driverId, p_kind: kind, p_text: text, p_video: video || "" }); err(error); onWrite("protests");
   }
+  async function deleteProtest(id) { const { error } = await sb.from("protests").delete().eq("id", id); err(error); onWrite("protests"); }
   async function updateProtest(id, patch) {
     const { error } = await sb.from("protests").update({ ...patch, updated_at: new Date().toISOString() }).eq("id", id); err(error); onWrite("protests");
   }
@@ -129,8 +115,28 @@ const DATA = (() => {
   async function addSteward(email) { const { error } = await sb.from("stewards").insert({ email: email.trim().toLowerCase() }); err(error); }
   async function removeSteward(email) { const { error } = await sb.from("stewards").delete().eq("email", email); err(error); }
 
+  /* ---- passord (arrangør) ---- */
+  async function sendReset(email, redirectTo) {
+    const { error } = await sb.auth.resetPasswordForEmail(email.trim().toLowerCase(), { redirectTo });
+    if (error) throw new Error(/rate|too many|security purposes/i.test(error.message || "") ? "Supabase sender bare noen få e-poster i timen. Vent litt, eller sett et midlertidig passord i stedet." : error.message);
+  }
+  /** Setter passord på en eksisterende konto. Lager kontoen først hvis den ikke finnes. Gir "set" eller "created". */
+  async function setPassword(email, password, url, key) {
+    const e = email.trim().toLowerCase();
+    let { data, error } = await sb.rpc("admin_set_password", { p_email: e, p_password: password });
+    if (missing(error)) throw new Error("Funksjonen for å sette passord finnes ikke i databasen ennå. Kjør supabase/passord.sql i Supabase.");
+    err(error);
+    if (data) return "set";
+    // Ingen konto: lag den med en egen klient, slik at arrangøren ikke blir logget ut
+    const tmp = window.supabase.createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false, storageKey: "csl-tmp-signup" } });
+    const r = await tmp.auth.signUp({ email: e, password });
+    if (r.error) throw new Error(r.error.message);
+    ({ data, error } = await sb.rpc("admin_set_password", { p_email: e, p_password: password })); // bekrefter e-posten
+    err(error);
+    return "created";
+  }
+
   function init(client, hooks) { sb = client; onWrite = hooks.onWrite; cache = hooks.cache; }
   return { init, db, loadLeagues, loadDrivers, loadResults, isAdmin, listAdmins, addAdmin, removeAdmin,
-           loadProtests, loadEvents, isSteward, myLink, quota, requestLink, cancelLink, listLinks, approveLink,
-           fileProtest, protestReply, updateProtest, addEvents, listStewards, addSteward, removeSteward };
+           loadProtests, loadEvents, isSteward, quota, fileProtest, protestReply, deleteProtest, updateProtest, addEvents, listStewards, addSteward, removeSteward, sendReset, setPassword };
 })();

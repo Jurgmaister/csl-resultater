@@ -239,8 +239,18 @@ table.eff{border-collapse:collapse;font-size:14px;width:100%;margin-top:4px}
 .linkbtn.sm{font-size:13px;padding:0}
 .linkform select{max-width:260px}
 details summary{cursor:pointer;color:var(--muted);margin-top:6px}
-@media (max-width:860px){.case{grid-template-columns:1fr 1fr}.case .act{grid-column:1/-1}.detail{grid-template-columns:1fr}.formgrid{grid-template-columns:1fr 1fr}.vs{grid-template-columns:1fr}.vs .mid{display:none}}
-@media (max-width:520px){.case{grid-template-columns:1fr}.formgrid{grid-template-columns:1fr}.formgrid .s2{grid-column:1/-1}.filters .grow{margin-left:0;width:100%}}
+.admins .acts{display:inline-flex;gap:6px;flex-shrink:0;overflow:visible}
+.pwrow{display:flex;gap:8px}.pwrow input{flex:1;font-family:ui-monospace,Menlo,Consolas,monospace}
+#account .who.linkbtn{text-decoration:none}#account .who.linkbtn:hover{color:#fff;text-decoration:underline}
+.pform{max-width:760px}
+.pform select,.pform input,.pform textarea{font-size:16px;padding:10px 12px}
+.pform select.attn{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.formbtns{justify-content:flex-end}
+.hp{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
+@media (max-width:860px){.case{grid-template-columns:1fr 1fr}.case .act{grid-column:1/-1}.detail{grid-template-columns:1fr}.vs{grid-template-columns:1fr}.vs .mid{display:none}}
+.formgrid{align-items:end}.formgrid>*{min-width:0}.formgrid select,.formgrid input{width:100%}
+@media (max-width:600px){.formgrid{grid-template-columns:repeat(2,minmax(0,1fr))}.formgrid .s2{grid-column:span 1}.formgrid .s4{grid-column:1/-1}.formbtns .btn{flex:1;justify-content:center;padding:12px}}
+@media (max-width:520px){.case{grid-template-columns:1fr}.filters .grow{margin-left:0;width:100%}.filters .grow .btn{flex:1;justify-content:center}}
 </style>
 </head>
 <body>
