@@ -434,16 +434,14 @@
         ${mode === "all" && d2on ? `<th class="num">Div</th>` : ""}<th>Bil</th><th class="num">Start</th><th class="num">Gap</th><th class="num">Ledet</th>
         <th class="num">Beste runde</th><th class="num">Runder</th><th class="num">Inc</th><th class="num">Poeng</th><th>Straff</th></tr></thead>
         <tbody>${body}</tbody></table></div>
-      <p class="legend">Straff: poengtrekk trekkes fra løpets poeng. DNF, DNS og DSQ gir 0 poeng. DSQ flytter de bak opp en plass. Status DQ i filen gir 0 poeng automatisk.${pOn ? " Straffer med saksnummer kommer fra protestsaker og endres ved å endre avgjørelsen." : ""}</p>${penList}`;
+      <p class="legend">Straff: straffer gis av stewards i protestsaker og vises med lenke til saken. Status DQ i filen gir 0 poeng automatisk.${anyProtestLeague() ? ` Var du involvert i en hendelse? <button class="linkbtn" data-act="newProtest" data-rid="${esc(res.id)}">Send inn protest</button>` : ""}</p>${penList}`;
   }
 
+  /** Straff lagt inn manuelt i resultatet (eldre ordning). Vises bare som informasjon. */
   function penCell(r) {
     const p = r.p;
-    if (!S.canWrite) return p ? (p.t === "pts" ? "-" + fmtPts(p.v) : p.t) : "";
-    const t = p ? p.t : "";
-    const o = (v, l) => `<option value="${v}" ${t === v ? "selected" : ""}>${l}</option>`;
-    return `<div class="penbox"><select data-chg="penT" data-key="${esc(r.key)}" aria-label="Straff for ${esc(r.name)}">${o("", "–")}${o("pts", "Poengtrekk")}${o("DNF", "DNF")}${o("DNS", "DNS")}${o("DSQ", "DSQ")}</select>
-      ${t === "pts" ? `<input type="number" min="0" step="1" value="${esc(p.v || 0)}" data-chg="penV" data-key="${esc(r.key)}" aria-label="Poengtrekk" />` : ""}</div>`;
+    if (!p || (p.t === "pts" && !(+p.v > 0))) return "";
+    return ` <span class="penpill" title="Lagt inn av arrangør i resultatet">${esc(p.t === "pts" ? "−" + fmtPts(p.v) + " p" : p.t)}</span>`;
   }
 
   /* ---------------- protester: hjelpere ---------------- */
@@ -1047,7 +1045,12 @@
       if (ok) { await loadProtestData(L.id); S.pv.mode = "list"; S.pv.id = null; } render();
     },
     pList: () => { S.pv.mode = "list"; S.pv.id = null; S.reply = null; render(); window.scrollTo(0, 0); },
-    newProtest: () => { S.pv.mode = "new"; S.pf = null; render(); window.scrollTo(0, 0); },
+    newProtest: (b) => {
+      const rid = b && b.dataset.rid, L = league();
+      S.tab = "protests"; S.pv = { ...S.pv, mode: "new" };
+      S.pf = rid && L && protestCfg(L).enabled ? { chosen: true, rid, by: "", byNum: "", against: "", againstNum: "", kind: "", lap: "", replay: "", descr: "", video: "" } : null;
+      render(); window.scrollTo(0, 0);
+    },
     pFilterDrv: (b) => { S.tab = "protests"; S.pv = { mode: "list", id: null, f: { rid: "", no: "", drv: b.dataset.name, st: "" } }; render(); window.scrollTo(0, 0); },
     reply: (b) => { S.reply = { id: S.pv.id, kind: b.dataset.v }; render(); const t = $("#rpText"); if (t) t.focus(); },
     replyCancel: () => { S.reply = null; render(); },
@@ -1293,13 +1296,6 @@
       await write(() => S.db.doc("leagues/" + L.id + "/results/" + S.sel).update({ raceTime: sec, raceTimeSrc: sec ? "manuell" : "" }), sec ? "Løpstiden er lagret." : "Løpstiden er fjernet.");
     }
     if (c === "half") await write(() => S.db.doc("leagues/" + L.id + "/results/" + S.sel).update({ half: t.checked }));
-    if (c === "penT" || c === "penV") {
-      const key = t.dataset.key, res = S.results[S.sel]; const cur = (res.pen || {})[key];
-      let val;
-      if (c === "penT") val = t.value ? { t: t.value, v: t.value === "pts" ? (cur && cur.v) || 5 : 0 } : null;
-      else val = { t: "pts", v: Math.max(0, parseFloat(t.value) || 0) };
-      await write(() => S.db.doc("leagues/" + L.id + "/results/" + S.sel).update({ pen: { [key]: val } }));
-    }
     if (c === "drv") {
       const f = t.dataset.f; let v = t.value.trim();
       if (f === "div") v = +v;
