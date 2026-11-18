@@ -62,7 +62,8 @@ Legg aldri inn `service_role`- eller secret-nøkkelen, og ingen e-postadresser, 
 - Lik poengsum avgjøres av beste enkeltresultater (største poeng først).
 - Straffer fra protestsaker lagres ikke i resultatet, men beregnes fra avgjorte saker (`decision.apply`,
   status `decided`/`closed`) med `CORE.protestPens` og sendes inn i `computeRace`/`computeStandings`.
-  Gjenåpnes en sak, forsvinner straffen til den er avgjort på nytt. Typer: poengtrekk, tidsstraff
+  Gjenåpnes en sak, forsvinner straffen til den er avgjort på nytt. En sak kan ha flere straffer
+  (`decision.pens`, eldre saker har bare `decision.pen`; les med `CORE.decisionPens`). Typer: poengtrekk, tidsstraff
   (sekunder på tiden for førere på samme runde som vinneren, sorterer på nytt) og DSQ. Manuelle straffer
   i `results.data.pen` kommer i tillegg.
 - Protestfrist: midnatt etter rundens dato + `deadlineH` timer (Europe/Oslo). Runder uten dato har ingen frist.

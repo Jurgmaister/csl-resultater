@@ -416,7 +416,7 @@
         ${mode === "all" && d2on ? `<td class="num"><span class="div d${r.div}" title="Divisjon fra ${r.divSrc}">${r.div}</span></td>` : ""}
         <td class="car">${esc(r.car)}</td><td class="num">${r.start ?? ""}</td><td class="num mono ${(mode === "d2" ? r.d2pos : r.cpos) === 1 && res.raceTime ? "rtime" : ""}">${esc(gap(r))}${r.tpen && !r.dq ? ` <span class="muted small">(inkl. ${fmtPts(r.tpen)} s)</span>` : ""}</td>
         <td class="num">${r.led}</td><td class="num mono">${esc(r.best)}</td><td class="num">${r.laps}</td><td class="num">${r.inc}</td>
-        <td class="num tot">${fmtPts(pts)}</td><td class="pen">${(r.pp || []).map((x) => `<span class="penpill">${esc(penShort(x))}</span> ${caseLink(x.case, "Sak #" + x.case)}`).join(" ")}${penCell(r)}</td></tr>`;
+        <td class="num tot">${fmtPts(pts)}</td><td class="pen">${[...new Set((r.pp || []).map((x) => x.case))].map((no) => r.pp.filter((x) => x.case === no).map((x) => `<span class="penpill">${esc(penShort(x))}</span>`).join(" ") + " " + caseLink(no, "Sak #" + no)).join(" ")}${penCell(r)}</td></tr>`;
     }).join("");
     const nDq = m.rows.filter((r) => r.dq).length, n2 = m.rows.filter((r) => r.div === 2).length;
     const dl = pOn ? CORE.protestDeadline(L, res.round) : null;
@@ -482,11 +482,20 @@
     if (pen.t === "DSQ") return "Diskvalifisert fra løpet";
     return pen.t;
   }
+  const decPens = (d) => CORE.decisionPens(d);
+  /** Straffene valgt i avgjørelsesskjemaet. DSQ utelukker de andre. */
+  function formPens(D) {
+    if (D.dsq) return [{ t: "DSQ", v: 0 }];
+    const out = [];
+    if (D.pts && +D.ptsV > 0) out.push({ t: "pts", v: +D.ptsV });
+    if (D.time && +D.timeV > 0) out.push({ t: "time", v: +D.timeV });
+    return out;
+  }
   const OUTCOME = { nfa: "Ingen videre handling", warn: "Advarsel", pen: "Straff", rejected: "Avvist" };
-  function outcomeText(d) { if (!d) return ""; return d.outcome === "pen" ? "Straff · " + penLong(d.pen) : OUTCOME[d.outcome] || ""; }
+  function outcomeText(d) { if (!d) return ""; return d.outcome === "pen" ? "Straff · " + decPens(d).map(penLong).join(" og ") : OUTCOME[d.outcome] || ""; }
   function outcomePill(d) {
     if (!d) return "";
-    if (d.outcome === "pen") return `<span class="penpill">${esc(penShort(d.pen))}</span>`;
+    if (d.outcome === "pen") return decPens(d).map((x) => `<span class="penpill">${esc(penShort(x))}</span>`).join(" ");
     return `<span class="badge ${d.outcome === "nfa" ? "nfa" : ""}">${esc(OUTCOME[d.outcome] || "")}</span>`;
   }
   function statusBadge(p) {
@@ -550,7 +559,7 @@
     const d = p.decision;
     const right = isOpen(p)
       ? `<div><div class="lbl">Status</div>${statusBadge(p)}${p.status === "appealed" && d ? `<div class="small muted dec">Opprinnelig: ${esc(outcomeText(d))}</div>` : ""}</div>`
-      : `<div><div class="lbl">Avgjørelse</div>${statusBadge(p)}${d ? `<div class="dec">${esc(d.outcome === "pen" ? penShort(d.pen) + " · " + decDriverName(p) : d.outcome === "warn" ? "Advarsel · " + decDriverName(p) : d.outcome === "nfa" ? "Racinghendelse" : "")}</div>` : ""}</div>`;
+      : `<div><div class="lbl">Avgjørelse</div>${statusBadge(p)}${d ? `<div class="dec">${esc(d.outcome === "pen" ? decPens(d).map(penShort).join(" ") + " · " + decDriverName(p) : d.outcome === "warn" ? "Advarsel · " + decDriverName(p) : d.outcome === "nfa" ? "Racinghendelse" : "")}</div>` : ""}</div>`;
     return `<div class="case ${isOpen(p) ? "open" : ""}"><span class="no">Sak #${p.no}</span>
       <div><div class="lbl">Sendt inn av</div><div class="drvn">${nb ? `<span class="n">#${esc(nb)}</span>` : ""}${esc(by)}</div></div>
       <div><div class="lbl">Mot</div><div class="drvn">${na ? `<span class="n">#${esc(na)}</span>` : ""}${esc(ag)}</div></div>
@@ -705,8 +714,8 @@
     Object.keys(base).forEach((k) => (base[k] = base[k].filter((x) => x.case !== p.no)));
     const next = JSON.parse(JSON.stringify(base));
     const name = driverName(D.driver, "");
-    if (D.outcome === "pen" && D.apply && name && ["pts", "time", "DSQ"].includes(D.penT)) {
-      (next[res.id] = next[res.id] || []).push({ key: CORE.norm(name), t: D.penT, v: +D.penV || 0, case: p.no });
+    if (D.outcome === "pen" && D.apply && name) {
+      formPens(D).forEach((x) => (next[res.id] = next[res.id] || []).push({ key: CORE.norm(name), t: x.t, v: x.v, case: p.no }));
     }
     const dm = driverMap();
     const a = CORE.computeRace(res, L, dm, base[res.id]), b = CORE.computeRace(res, L, dm, next[res.id]);
@@ -725,10 +734,13 @@
     const by = driverName(p.by_driver, p.by_name), ag = driverName(p.against_driver, p.against_name);
     if (!S.dec || S.dec.id !== p.id) {
       const d = p.decision || {};
-      S.dec = { id: p.id, outcome: d.outcome || "pen", driver: d.driver || p.against_driver || "", penT: (d.pen && d.pen.t) || "pts", penV: d.pen ? d.pen.v : 5,
+      const ps = decPens(d), f = (t) => ps.find((x) => x.t === t);
+      S.dec = { id: p.id, outcome: d.outcome || "pen", driver: d.driver || p.against_driver || "",
+        pts: ps.length ? !!f("pts") : true, ptsV: f("pts") ? f("pts").v : 5, time: !!f("time"), timeV: f("time") ? f("time").v : 5, dsq: !!f("DSQ"),
         rule: d.rule || "", reason: d.reason || "", apply: d.apply !== false, refund: d.refund != null ? d.refund : true };
     }
     const D = S.dec;
+    const penBtn = (f, label) => `<button type="button" class="${D[f] ? "on" : ""}" data-act="decPen" data-v="${f}" aria-pressed="${D[f] ? "true" : "false"}">${D[f] ? "✓ " : ""}${label}</button>`;
     const radio = (field, v, label) => `<button type="button" class="${D[field] === v ? "on" : ""}" data-act="decSet" data-f="${field}" data-v="${v}">${label}</button>`;
     const inRes = new Set(((S.results["r" + p.round + "-" + p.race] || {}).rows || []).map((r) => CORE.norm(r.name)));
     const drvOpts = S.drivers.filter((d) => inRes.has(CORE.norm(d.name)) || d.id === D.driver).sort((a, b) => a.name.localeCompare(b.name, "nb"))
@@ -741,8 +753,11 @@
       <form data-form="decide">
       <div class="fld"><span>Utfall</span><div class="seg radio">${radio("outcome", "nfa", "Ingen videre handling")}${radio("outcome", "warn", "Advarsel")}${radio("outcome", "pen", "Straff")}${radio("outcome", "rejected", "Avvist (ugyldig protest)")}</div></div>
       ${D.outcome === "pen" || D.outcome === "warn" ? `<label class="fld"><span>Hvem får ${D.outcome === "pen" ? "straffen" : "advarselen"}</span><select data-chg="dec.driver">${drvOpts}</select></label>` : ""}
-      ${D.outcome === "pen" ? `<div class="fld"><span>Straff</span><div class="seg radio">${radio("penT", "pts", "Poengtrekk")}${radio("penT", "time", "Tidsstraff")}${radio("penT", "DSQ", "DSQ fra løpet")}</div></div>
-        ${D.penT !== "DSQ" ? `<label class="fld inline"><span>${D.penT === "time" ? "Sekunder lagt til løpstiden" : "Poeng som trekkes"}</span><input type="number" min="0" step="1" class="num" value="${esc(D.penV)}" data-chg="dec.penV" /></label>` : ""}` : ""}
+      ${D.outcome === "pen" ? `<div class="fld"><span>Straff (velg én eller flere)</span><div class="seg radio">${penBtn("pts", "Poengtrekk")}${penBtn("time", "Tidsstraff")}${penBtn("dsq", "DSQ fra løpet")}</div></div>
+        ${D.pts && !D.dsq ? `<label class="fld inline"><span>Poeng som trekkes</span><input type="number" min="0" step="1" class="num" value="${esc(D.ptsV)}" data-chg="dec.ptsV" /></label>` : ""}
+        ${D.time && !D.dsq ? `<label class="fld inline"><span>Sekunder lagt til løpstiden</span><input type="number" min="0" step="1" class="num" value="${esc(D.timeV)}" data-chg="dec.timeV" /></label>` : ""}
+        ${D.dsq ? `<p class="muted small">DSQ gir 0 poeng i løpet, så poengtrekk og tidsstraff kan ikke kombineres med den.</p>` : ""}
+        ${!formPens(D).length ? `<p class="error">Velg minst én straff med et tall over 0.</p>` : ""}` : ""}
       <label class="fld"><span>Regel / kategori (valgfritt)</span><input value="${esc(D.rule)}" data-chg="dec.rule" maxlength="200" /></label>
       <label class="fld"><span>Begrunnelse (vises offentlig)</span><textarea data-chg="dec.reason" maxlength="4000" style="font-family:var(--body);font-size:15px;min-height:80px">${esc(D.reason)}</textarea></label>
       ${D.outcome === "pen" ? `<div class="applybox"><label class="chk"><input type="checkbox" data-chg="dec.apply" ${D.apply ? "checked" : ""} /> Legg straffen inn i resultatet for R${p.round} ${esc(raceLabel(L, p.race))}</label>
@@ -1037,6 +1052,13 @@
     reply: (b) => { S.reply = { id: S.pv.id, kind: b.dataset.v }; render(); const t = $("#rpText"); if (t) t.focus(); },
     replyCancel: () => { S.reply = null; render(); },
     pDecide: () => { S.pv.mode = "decide"; S.dec = null; render(); window.scrollTo(0, 0); },
+    decPen: (b) => {
+      const D = S.dec; if (!D) return;
+      const f = b.dataset.v; D[f] = !D[f];
+      if (f === "dsq" && D.dsq) { D.pts = false; D.time = false; }
+      if (f !== "dsq" && D[f]) D.dsq = false;
+      render();
+    },
     decSet: (b) => {
       const D = S.dec; if (!D) return;
       D[b.dataset.f] = b.dataset.v;
@@ -1165,10 +1187,12 @@
       const cfg = protestCfg(L);
       const who = D.outcome === "pen" || D.outcome === "warn";
       if (who && !D.driver) return toast("Velg hvem avgjørelsen gjelder.", "err");
+      const pens = D.outcome === "pen" ? formPens(D) : [];
+      if (D.outcome === "pen" && !pens.length) return toast("Velg minst én straff med et tall over 0.", "err");
       const appealed = p.status === "appealed";
       const decision = {
         outcome: D.outcome, driver: who ? D.driver : null, driverName: who ? driverName(D.driver, "") : "",
-        pen: D.outcome === "pen" ? { t: D.penT, v: D.penT === "DSQ" ? 0 : Math.max(0, +D.penV || 0) } : null,
+        pens: D.outcome === "pen" ? pens : [], pen: pens[0] || null,
         apply: D.outcome === "pen" && !!D.apply, rule: (D.rule || "").trim(), reason: (D.reason || "").trim(), refund: !!D.refund,
         at: new Date().toISOString(), prev: appealed ? p.decision : null,
       };
@@ -1257,7 +1281,7 @@
     if (c === "reply.driver" && S.reply) { S.reply.driver = t.value; S.reply.text = $("#rpText").value; S.reply.video = $("#rpVideo").value; render(); return; }
     if (c.startsWith("dec.") && S.dec) {
       const k = c.slice(4); S.dec[k] = t.type === "checkbox" ? t.checked : t.value;
-      if (["driver", "penV", "apply"].includes(k)) render();
+      if (["driver", "ptsV", "timeV", "apply"].includes(k)) render();
       return;
     }
     if (c === "impRound") { S.imp.round = +t.value; render(); }

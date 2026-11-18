@@ -63,7 +63,7 @@ spam eller feil.
 
 En protest eller anke koster én av førerens protester for runden, og gis tilbake hvis den fører fram.
 
-Når stewards publiserer en straff (poengtrekk, tidsstraff eller DSQ) med «Legg straffen inn i resultatet»,
+Når stewards publiserer en straff (poengtrekk, tidsstraff eller begge, eller DSQ) med «Legg straffen inn i resultatet»,
 oppdateres resultatlisten og standings med en gang, og straffen vises med lenke til saken. Tidsstraff
 legger sekunder til tiden og kan endre plasseringene. Mens saker er åpne, er resultatet merket «Foreløpig».
 

@@ -317,16 +317,24 @@ const CORE = (() => {
 
   /** Straffer fra avgjorte protestsaker som skal legges inn i resultatet, gruppert per løp (rid).
       driverName(id) gir førerens navn i dag (navnet kan være endret siden protesten ble sendt inn). */
+  /** Straffene i en avgjørelse: d.pens (flere), eller d.pen fra eldre saker. */
+  function decisionPens(d) {
+    if (!d) return [];
+    const list = Array.isArray(d.pens) ? d.pens : d.pen ? [d.pen] : [];
+    return list.filter((x) => x && ["pts", "time", "DSQ"].includes(x.t));
+  }
+
   function protestPens(protests, driverName) {
     const out = {};
     (protests || []).forEach((p) => {
       const d = p.decision;
-      if (!d || d.outcome !== "pen" || !d.apply || !d.pen || !["decided", "closed"].includes(p.status)) return;
-      if (!["pts", "time", "DSQ"].includes(d.pen.t)) return;
+      if (!d || d.outcome !== "pen" || !d.apply || !["decided", "closed"].includes(p.status)) return;
+      const pens = decisionPens(d);
+      if (!pens.length) return;
       const name = (driverName && driverName(d.driver)) || d.driverName;
       if (!name) return;
       const rid = "r" + p.round + "-" + p.race;
-      (out[rid] = out[rid] || []).push({ key: norm(name), t: d.pen.t, v: +d.pen.v || 0, case: p.no });
+      pens.forEach((x) => (out[rid] = out[rid] || []).push({ key: norm(name), t: x.t, v: +x.v || 0, case: p.no }));
     });
     return out;
   }
@@ -341,6 +349,6 @@ const CORE = (() => {
   }
 
   return { defaultScale, norm, parseCSVText, parseCSV, parseJSON, parseFile, computeRace, computeStandings, raceKeys,
-           cslTemplate, fmtGap, fmtLap, fmtTime, secs, isDQ, protestDefaults, protestPens, protestDeadline };
+           cslTemplate, fmtGap, fmtLap, fmtTime, secs, isDQ, protestDefaults, decisionPens, protestPens, protestDeadline };
 })();
 if (typeof module !== "undefined") module.exports = CORE;
