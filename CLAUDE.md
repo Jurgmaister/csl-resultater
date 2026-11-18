@@ -44,7 +44,8 @@ Protester: `protests` (sak per liga med løpende `no`, `decision` jsonb), `prote
 (`is_steward()` = arrangør eller steward). Førere logger ikke inn: de skriver bare via funksjonene
 `file_protest` og `protest_reply` (åpne for `anon`), som sjekker at førerne var med i løpet, frist,
 video og antall protester (`protest_quota`). Stewards skriver direkte i `protests`/`protest_events`.
-Oppsettet ligger i `leagues.config.protests` (`CORE.protestDefaults`). `#protest` i adressen åpner skjemaet.
+Oppsettet ligger i `leagues.config.protests` (`CORE.protestDefaults`), også reglene stewards velger i
+avgjørelsen (`rules`; `CORE.protestRules` legger alltid til «99 Annet» med fritekst). `#protest` i adressen åpner skjemaet.
 Endringer i skjemaet må kjøres manuelt i Supabase SQL Editor og legges inn i `supabase/schema.sql`.
 Legg aldri inn `service_role`- eller secret-nøkkelen, og ingen e-postadresser, i koden.
 

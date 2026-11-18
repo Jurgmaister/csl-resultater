@@ -48,7 +48,9 @@ Slik slår du det på:
    med nederst i `schema.sql` for nye prosjekter.
 2. **Oppsett → Protester**: kryss av for «Ta imot protester», og sett frister, antall protester per
    runde og hendelsestyper. Sett dato på rundene under **Runder**. Fristen regnes fra midnatt etter løpsdagen.
-3. **Oppsett → Stewards**: legg til e-posten til dem som skal avgjøre saker (arrangører kan også).
+3. **Oppsett → Regler**: én regel per linje fra regelheftet (f.eks. «3.4 Overtaking»). Stewards velger regel
+   fra denne listen når de avgjør en sak. «99 Annet» står alltid nederst, og da skriver stewarden regelen selv.
+4. **Oppsett → Stewards**: legg til e-posten til dem som skal avgjøre saker (arrangører kan også).
 
 I skjemaet velger føreren først løpsserie, deretter løp. Førerlistene hentes fra resultatfilen for
 løpet (de som står i standings), og bilnummeret fylles ut automatisk. Førere kan:

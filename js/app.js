@@ -728,6 +728,19 @@
       ${changed.length > 8 ? `<p class="muted small">… og ${changed.length - 8} til.</p>` : ""}`;
   }
 
+  /** Lagret regeltekst → valg i menyen + fritekst for «99 Annet». */
+  function ruleInit(L, rule) {
+    const r = (rule || "").trim(), list = CORE.protestRules(L), O = CORE.RULE_OTHER;
+    if (!r) return { ruleSel: "", ruleOther: "" };
+    if (list.includes(r)) return { ruleSel: r, ruleOther: "" };
+    if (r.toLowerCase().startsWith(O.toLowerCase())) return { ruleSel: O, ruleOther: r.slice(O.length).replace(/^[\s:·–-]+/, "") };
+    return { ruleSel: O, ruleOther: r };
+  }
+  function ruleText(D) {
+    if (D.ruleSel !== CORE.RULE_OTHER) return D.ruleSel || "";
+    const o = (D.ruleOther || "").trim();
+    return CORE.RULE_OTHER + (o ? ": " + o : "");
+  }
   function viewDecide(L, p) {
     const by = driverName(p.by_driver, p.by_name), ag = driverName(p.against_driver, p.against_name);
     if (!S.dec || S.dec.id !== p.id) {
@@ -735,7 +748,7 @@
       const ps = decPens(d), f = (t) => ps.find((x) => x.t === t);
       S.dec = { id: p.id, outcome: d.outcome || "pen", driver: d.driver || p.against_driver || "",
         pts: ps.length ? !!f("pts") : true, ptsV: f("pts") ? f("pts").v : 5, time: !!f("time"), timeV: f("time") ? f("time").v : 5, dsq: !!f("DSQ"),
-        rule: d.rule || "", reason: d.reason || "", apply: d.apply !== false, refund: d.refund != null ? d.refund : true };
+        ...ruleInit(L, d.rule), reason: d.reason || "", apply: d.apply !== false, refund: d.refund != null ? d.refund : true };
     }
     const D = S.dec;
     const penBtn = (f, label) => `<button type="button" class="${D[f] ? "on" : ""}" data-act="decPen" data-v="${f}" aria-pressed="${D[f] ? "true" : "false"}">${D[f] ? "✓ " : ""}${label}</button>`;
@@ -744,6 +757,7 @@
     const drvOpts = S.drivers.filter((d) => inRes.has(CORE.norm(d.name)) || d.id === D.driver).sort((a, b) => a.name.localeCompare(b.name, "nb"))
       .map((d) => `<option value="${esc(d.id)}" ${d.id === D.driver ? "selected" : ""}>${d.num ? "#" + esc(d.num) + " " : ""}${esc(d.name)}</option>`).join("");
     const target = p.status === "appealed" ? driverName(p.appeal_by, "den som anket") : by;
+    const who = D.outcome === "pen" || D.outcome === "warn";
     return `<section class="panel" style="max-width:780px">
       <p class="small"><button class="linkbtn" data-act="openCase" data-no="${p.no}">← Tilbake til sak #${p.no}</button></p>
       <h2>${p.status === "appealed" ? "Behandle anke i" : "Avgjør"} sak #${p.no}</h2>
@@ -756,7 +770,8 @@
         ${D.time && !D.dsq ? `<label class="fld inline"><span>Sekunder lagt til løpstiden</span><input type="number" min="0" step="1" class="num" value="${esc(D.timeV)}" data-chg="dec.timeV" /></label>` : ""}
         ${D.dsq ? `<p class="muted small">DSQ gir 0 poeng i løpet, så poengtrekk og tidsstraff kan ikke kombineres med den.</p>` : ""}
         ${!formPens(D).length ? `<p class="error">Velg minst én straff med et tall over 0.</p>` : ""}` : ""}
-      <label class="fld"><span>Regel / kategori (valgfritt)</span><input value="${esc(D.rule)}" data-chg="dec.rule" maxlength="200" /></label>
+      <label class="fld"><span>Regel${who ? "" : " (valgfritt)"}</span><select data-chg="dec.ruleSel" ${who ? "required" : ""}><option value="">Velg regel…</option>${CORE.protestRules(L).map((x) => `<option ${x === D.ruleSel ? "selected" : ""}>${esc(x)}</option>`).join("")}</select></label>
+      ${D.ruleSel === CORE.RULE_OTHER ? `<label class="fld"><span>Hvilken regel?</span><input value="${esc(D.ruleOther)}" data-chg="dec.ruleOther" maxlength="200" placeholder="Beskriv regelen eller punktet i regelheftet" required /></label>` : ""}
       <label class="fld"><span>Begrunnelse (vises offentlig)</span><textarea data-chg="dec.reason" maxlength="4000" style="font-family:var(--body);font-size:15px;min-height:80px">${esc(D.reason)}</textarea></label>
       ${D.outcome === "pen" ? `<div class="applybox"><label class="chk"><input type="checkbox" data-chg="dec.apply" ${D.apply ? "checked" : ""} /> Legg straffen inn i resultatet for R${p.round} ${esc(raceLabel(L, p.race))}</label>
         ${D.apply ? `<div class="effect"><div class="lbl">Forhåndsvisning av effekten</div>${decisionPreview(L, p, D)}</div>` : ""}
@@ -910,6 +925,9 @@
         </div>
         <p class="muted small">Fristen regnes fra midnatt etter datoen som står på runden under Runder. Runder uten dato har ingen frist.</p>
         <label class="fld"><span>Hendelsestyper (én per linje)</span><textarea rows="7" data-dr="protests.kindsText">${esc(P.kinds.join("\n"))}</textarea></label></section>
+      <section class="panel"><h3>Regler</h3><p class="muted small">Reglene stewards velger mellom når de avgjør en sak. Én regel per linje, med nummer og navn fra regelheftet, for eksempel «3.4 Overtaking». «${CORE.RULE_OTHER}» kommer alltid nederst i listen, og da skriver stewarden selv hvilken regel det gjelder.</p>
+        <label class="fld"><span>Regler (én per linje)</span><textarea rows="15" data-dr="protests.rulesText">${esc((P.rules || []).join("\n"))}</textarea></label>
+        <p class="muted small">Sist i listen: <b>${esc(CORE.RULE_OTHER)}</b></p></section>
       <section class="panel"><h3>Stewards</h3><p class="muted small">Stewards kan behandle og avgjøre protester, men ikke endre oppsett eller importere resultater. Arrangører kan også avgjøre protester.</p>
         ${S.stewards ? (S.stewards.length ? `<ul class="admins">${S.stewards.map((a) => `<li><span>${esc(a.email)}</span><span class="acts"><button class="btn sm ghost" data-act="pwFor" data-email="${esc(a.email)}" title="Send lenke eller sett passord">Passord</button><button class="btn sm ghost" data-act="rmSteward" data-email="${esc(a.email)}">Fjern</button></span></li>`).join("")}</ul>` : `<p class="small muted">Ingen stewards ennå.</p>`) : `<p class="muted small">Henter…</p>`}
         <form data-form="addSteward" class="addrow"><input id="stewardEmail" type="email" placeholder="e-post til ny steward" required aria-label="E-post" /><button class="btn" type="submit">Legg til</button></form>
@@ -960,6 +978,7 @@
   function setDraft(path, val) {
     const D = S.draft; if (!D) return;
     if (path === "scaleText") { D.scale = String(val).split(/[,;\s]+/).map((x) => parseFloat(x.replace(",", "."))).filter((x) => isFinite(x)); return; }
+    if (path === "protests.rulesText") { D.protests.rules = String(val).split("\n").map((x) => x.trim()).filter((x) => x && !/^99\s+annet$/i.test(x)); return; }
     if (path === "protests.kindsText") { D.protests.kinds = String(val).split("\n").map((x) => x.trim()).filter(Boolean); return; }
     if (/^protests\.(deadlineH|appealH|perRound)$/.test(path)) val = Math.max(1, parseInt(val, 10) || 1);
     const p = path.split("."); let o = D;
@@ -1192,11 +1211,13 @@
       if (who && !D.driver) return toast("Velg hvem avgjørelsen gjelder.", "err");
       const pens = D.outcome === "pen" ? formPens(D) : [];
       if (D.outcome === "pen" && !pens.length) return toast("Velg minst én straff med et tall over 0.", "err");
+      if (who && !D.ruleSel) return toast("Velg hvilken regel som er brutt.", "err");
+      if (D.ruleSel === CORE.RULE_OTHER && !(D.ruleOther || "").trim()) return toast("Skriv hvilken regel det gjelder under «99 Annet».", "err");
       const appealed = p.status === "appealed";
       const decision = {
         outcome: D.outcome, driver: who ? D.driver : null, driverName: who ? driverName(D.driver, "") : "",
         pens: D.outcome === "pen" ? pens : [], pen: pens[0] || null,
-        apply: D.outcome === "pen" && !!D.apply, rule: (D.rule || "").trim(), reason: (D.reason || "").trim(), refund: !!D.refund,
+        apply: D.outcome === "pen" && !!D.apply, rule: ruleText(D), reason: (D.reason || "").trim(), refund: !!D.refund,
         at: new Date().toISOString(), prev: appealed ? p.decision : null,
       };
       const evs = [{ protest_id: p.id, league_id: L.id, kind: "decision", author: "Stewards", round: p.round,
@@ -1284,7 +1305,7 @@
     if (c === "reply.driver" && S.reply) { S.reply.driver = t.value; S.reply.text = $("#rpText").value; S.reply.video = $("#rpVideo").value; render(); return; }
     if (c.startsWith("dec.") && S.dec) {
       const k = c.slice(4); S.dec[k] = t.type === "checkbox" ? t.checked : t.value;
-      if (["driver", "ptsV", "timeV", "apply"].includes(k)) render();
+      if (["driver", "ptsV", "timeV", "apply", "ruleSel"].includes(k)) render();
       return;
     }
     if (c === "impRound") { S.imp.round = +t.value; render(); }

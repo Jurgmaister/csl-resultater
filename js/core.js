@@ -311,8 +311,18 @@ const CORE = (() => {
     return {
       enabled: false, deadlineH: 48, appealH: 48, perRound: 2, video: "req",
       kinds: ["Kontakt / dytting", "Blokkering", "Utrygg retur til banen", "Ignorerte blått flagg", "Kutting / banegrenser", "Usportslig oppførsel", "Annet"],
+      // Regler stewards velger i avgjørelsen (fra CSL-regelheftet). «99 Annet» legges alltid til (RULE_OTHER).
+      rules: ["1.1 Code of Conduct", "1.2 Discord", "3.2 Qualifying", "3.3 First lap behavior", "3.4 Overtaking", "3.5 Braking zone",
+        "3.6 Yellow Flag / Accident ahead", "3.7 Blue Flag", "3.8 Race Control", "3.10.2 Rolling start", "4.2 Guidelines for multiclass",
+        "5 Oval league specific rules", "6 Protest"],
       ...(p || {}),
     };
+  }
+  const RULE_OTHER = "99 Annet";
+  /** Ligaens regler for nedtrekksmenyen, med «99 Annet» til slutt. */
+  function protestRules(league) {
+    const list = (protestDefaults(league && league.protests).rules || []).map((x) => String(x).trim()).filter((x) => x && !/^99\s+annet$/i.test(x));
+    return [...list, RULE_OTHER];
   }
 
   /** Straffer fra avgjorte protestsaker som skal legges inn i resultatet, gruppert per løp (rid).
@@ -349,6 +359,6 @@ const CORE = (() => {
   }
 
   return { defaultScale, norm, parseCSVText, parseCSV, parseJSON, parseFile, computeRace, computeStandings, raceKeys,
-           cslTemplate, fmtGap, fmtLap, fmtTime, secs, isDQ, protestDefaults, decisionPens, protestPens, protestDeadline };
+           cslTemplate, fmtGap, fmtLap, fmtTime, secs, isDQ, protestDefaults, protestRules, RULE_OTHER, decisionPens, protestPens, protestDeadline };
 })();
 if (typeof module !== "undefined") module.exports = CORE;
