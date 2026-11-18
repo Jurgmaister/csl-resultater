@@ -525,9 +525,16 @@
       .filter(Boolean).sort((a, b) => a.name.localeCompare(b.name, "nb"));
   }
   const raceOpts = (L) => CORE.raceKeys(L).filter((k) => S.results[k.id]).map((k) => ({ ...k, name: `R${k.round} ${trackOf(L, k.round)} · ${raceLabel(L, k.race)}` }));
+  /** Starttid i sekunder fra en YouTube-lenke: t=90, t=90s, t=1m30s, t=1h2m3s eller start=90. */
+  const ytStart = (u) => {
+    const m = String(u).match(/[?&#](?:t|start)=([\dhms]+)/i); if (!m) return 0;
+    const v = m[1].toLowerCase(); if (/^\d+$/.test(v)) return +v;
+    const part = (x) => { const r = v.match(new RegExp("(\\d+)" + x)); return r ? +r[1] : 0; };
+    return part("h") * 3600 + part("m") * 60 + part("s");
+  };
   const embedUrl = (u) => {
     let m = String(u).match(/(?:youtube\.com\/(?:watch\?(?:.*&)?v=|embed\/|shorts\/|live\/)|youtu\.be\/)([\w-]{11})/i);
-    if (m) return "https://www.youtube-nocookie.com/embed/" + m[1];
+    if (m) { const t = ytStart(u); return "https://www.youtube-nocookie.com/embed/" + m[1] + (t ? "?start=" + t : ""); }
     m = String(u).match(/streamable\.com\/(?:e\/)?([a-z0-9]+)/i);
     if (m) return "https://streamable.com/e/" + m[1];
     return "";
@@ -637,7 +644,7 @@
         <div class="s4 quota"><span>Protester igjen i runden: <b>${!F.by ? "velg fører" : q == null ? "…" : q + " av " + cfg.perRound}</b></span><span>Runde og replay-tid finner du i iRacing-replayen (klokken nederst).</span></div>
         <label class="fld s4"><span>Beskrivelse</span><textarea id="pfDescr" data-chg="pform.descr" maxlength="4000" required placeholder="Kort og saklig: hva skjedde, og hvem gjorde hva?">${esc(F.descr)}</textarea></label>
         <label class="fld s4"><span>Video${cfg.video === "req" ? "" : " (valgfritt)"}</span><input id="pfVideo" data-chg="pform.video" type="url" value="${esc(F.video)}" placeholder="https://youtu.be/…" ${cfg.video === "req" ? "required" : ""} maxlength="500" />
-          <span class="hint">Lenke til en video som kan spilles av (YouTube, Streamable, Google Drive), ikke en iRacing-replayfil. Sett delingen til «alle med lenken».</span></label>
+          <span class="hint">Lenke til en video som kan spilles av (YouTube, Streamable, Google Drive), ikke en iRacing-replayfil. Sett delingen til «alle med lenken».<br><b>YouTube: lim inn lenken med tidsstempel</b>, så starter videoen der hendelsen skjer. Sett videoen på pause der hendelsen begynner, høyreklikk og velg «Kopier videonettadressen ved gjeldende tidspunkt», eller trykk Del og kryss av for «Start ved». Lenken ender da med for eksempel <code>?t=754</code>.</span></label>
         <label class="hp" aria-hidden="true">Nettside <input id="pfWebsite" tabindex="-1" autocomplete="off" /></label>
         ${late ? `<p class="error s4">Protestfristen for dette løpet gikk ut ${fmtDate(dl, true)}.</p>` : ""}
         ${q === 0 ? `<p class="error s4">${esc(driverName(F.by))} har ingen protester igjen i denne runden.</p>` : ""}
