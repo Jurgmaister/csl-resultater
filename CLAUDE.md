@@ -77,6 +77,8 @@ tema i Barlow / Barlow Condensed.
 ## Arbeidsflyt
 
 - Commit og push til `main`; GitHub Pages publiserer automatisk på et par minutter.
+- Bytt `?v=` på script-taggene i `index.html` (til dagens dato) når JS-filer endres, ellers kan
+  nettleseren bruke en gammel kopi.
 - Bruk GitHubs noreply-adresse som commit-forfatter, ikke en privat e-post.
 - Test logikk i `js/core.js` med Node mot eksempelfiler før endringer i poeng eller import.
 
