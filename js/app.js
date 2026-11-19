@@ -588,7 +588,7 @@
     const last = keys[keys.length - 1];
     if (cfg.enabled && last) {
       const dl = CORE.protestDeadline(L, last.round);
-      info = `<div class="note"><b>Frist:</b><span>${dl ? (Date.now() < dl ? `Protester for R${last.round} ${esc(trackOf(L, last.round))} kan sendes inn til <b>${fmtDate(dl, true)}</b>.` : `Fristen for R${last.round} ${esc(trackOf(L, last.round))} gikk ut ${fmtDate(dl, true)}.`) : `Protester sendes inn senest ${cfg.deadlineH} timer etter løpsdagen.`}
+      info = `<div class="note"><b>Frist:</b><span>${dl ? (Date.now() < dl ? `Protester for R${last.round} ${esc(trackOf(L, last.round))} kan sendes inn til <b>${fmtDate(dl, true)}</b>.` : `Fristen for R${last.round} ${esc(trackOf(L, last.round))} gikk ut ${fmtDate(dl, true)}.`) : `Protester sendes inn senest ${cfg.deadlineH} timer etter løpsslutt.`}
         Hver fører har ${cfg.perRound} protester per runde. En protest som fører fram, gis tilbake.</span></div>`;
     }
     const sel = (v, cur) => (String(v) === String(cur) ? "selected" : "");
@@ -919,18 +919,18 @@
     if (!S.admins && !S.adminsLoading) { S.adminsLoading = true; DATA.listAdmins().then((a) => { S.admins = a; S.adminsLoading = false; softRender(); }).catch(() => { S.adminsLoading = false; }); }
     if (!S.stewards && !S.stewardsLoading && Array.isArray(S.protests)) { S.stewardsLoading = true; DATA.listStewards().then((a) => { S.stewards = a; S.stewardsLoading = false; softRender(); }).catch(() => { S.stewardsLoading = false; }); }
     const P = D.protests;
-    const hours = (field) => `<select data-dr="protests.${field}" data-num="1">${[24, 48, 72, 96, 168].map((h) => `<option value="${h}" ${+P[field] === h ? "selected" : ""}>${h === 168 ? "1 uke" : h + " timer"}</option>`).join("")}</select>`;
+    const hours = (field) => `<select data-dr="protests.${field}" data-num="1">${[12, 24, 48, 72, 96, 168].map((h) => `<option value="${h}" ${+P[field] === h ? "selected" : ""}>${h === 168 ? "1 uke" : h + " timer"}</option>`).join("")}</select>`;
     const protestPanels = !Array.isArray(S.protests)
       ? `<section class="panel"><h3>Protester</h3><p class="muted small">Protestsystemet er ikke satt opp i databasen ennå. Kjør <code>supabase/protester.sql</code> i Supabase (SQL Editor → New query → lim inn → Run), og last siden på nytt.</p></section>`
       : `<section class="panel"><h3>Protester</h3>
         <label class="chk"><input type="checkbox" ${P.enabled ? "checked" : ""} data-dr="protests.enabled" /> Ta imot protester i denne ligaen</label>
         <div class="grid2">
-          <label class="fld"><span>Protestfrist etter løpsdagen</span>${hours("deadlineH")}</label>
+          <label class="fld"><span>Protestfrist etter løpsslutt</span>${hours("deadlineH")}</label>
           <label class="fld"><span>Ankefrist etter avgjørelse</span>${hours("appealH")}</label>
           <label class="fld"><span>Protester per fører per runde</span><input type="number" min="1" max="20" class="num" value="${+P.perRound || 2}" data-dr="protests.perRound" /></label>
           <label class="fld"><span>Video</span><select data-dr="protests.video"><option value="req" ${P.video === "req" ? "selected" : ""}>Påkrevd</option><option value="opt" ${P.video !== "req" ? "selected" : ""}>Valgfri</option></select></label>
         </div>
-        <p class="muted small">Fristen regnes fra midnatt etter datoen som står på runden under Runder. Runder uten dato har ingen frist.</p>
+        <p class="muted small">Fristen regnes fra løpsslutt (dato og klokkeslett på runden under Runder). Uten klokkeslett regnes den fra midnatt etter datoen. Runder uten dato har ingen frist.</p>
         <label class="fld"><span>Hendelsestyper (én per linje)</span><textarea rows="7" data-dr="protests.kindsText">${esc(P.kinds.join("\n"))}</textarea></label></section>
       <section class="panel"><h3>Regler</h3><p class="muted small">Reglene stewards velger mellom når de avgjør en sak. Én regel per linje, med nummer og navn fra regelheftet, for eksempel «3.4 Overtaking». «${CORE.RULE_OTHER}» kommer alltid nederst i listen, og da skriver stewarden selv hvilken regel det gjelder.</p>
         <label class="fld"><span>Regler (én per linje)</span><textarea rows="15" data-dr="protests.rulesText">${esc((P.rules || []).join("\n"))}</textarea></label>
@@ -954,7 +954,8 @@
         <button class="btn sm" data-act="addRace">+ Legg til løp</button></section>
       <section class="panel"><h3>Runder</h3>
         <label class="fld inline"><span>Antall runder</span><input type="number" min="1" max="30" value="${D.rounds.length}" data-chg="nRounds" class="num" /></label>
-        <div class="rounds">${D.rounds.map((rd, i) => `<div class="roundrow"><span class="rn">R${i + 1}</span><input value="${esc(rd.track || "")}" placeholder="Bane" data-dr="rounds.${i}.track" aria-label="Bane runde ${i + 1}" /><input type="date" value="${esc(rd.date || "")}" data-dr="rounds.${i}.date" aria-label="Dato runde ${i + 1}" /></div>`).join("")}</div></section>
+        <div class="rounds">${D.rounds.map((rd, i) => `<div class="roundrow"><span class="rn">R${i + 1}</span><input value="${esc(rd.track || "")}" placeholder="Bane" data-dr="rounds.${i}.track" aria-label="Bane runde ${i + 1}" /><input type="date" value="${esc(rd.date || "")}" data-dr="rounds.${i}.date" aria-label="Dato runde ${i + 1}" /><input type="time" value="${esc(rd.end || "")}" data-dr="rounds.${i}.end" aria-label="Løpsslutt runde ${i + 1}" title="Løpsslutt" /></div>`).join("")}</div>
+        <p class="muted small">Klokkeslettet er løpsslutt: når siste løp i runden er ferdig. Protestfristen regnes derfra.</p></section>
       <section class="panel"><h3>Poeng</h3>
         <label class="fld"><span>Poengskala fra 1. plass og nedover, skilt med komma</span><textarea rows="4" data-dr="scaleText">${esc(D.scale.join(", "))}</textarea></label>
         <label class="fld inline"><span>Tellende løp (0 = alle teller)</span><input type="number" min="0" value="${+D.bestOf || 0}" data-dr="bestOf" class="num" /></label></section>
@@ -1332,7 +1333,7 @@
     }
     if (c === "nRounds") {
       const n = Math.max(1, Math.min(30, parseInt(t.value, 10) || 1)); const D = S.draft;
-      while (D.rounds.length < n) D.rounds.push({ track: "", date: "" });
+      while (D.rounds.length < n) D.rounds.push({ track: "", date: "", end: "" });
       D.rounds.length = n; render();
     }
     if (c === "logo" && t.files[0]) {

@@ -202,7 +202,7 @@ returns int
 language plpgsql security definer set search_path = public
 as $$
 declare
-  v_cfg jsonb; v_by text; v_ag text; v_rows jsonb; v_date date; v_h int; v_no int; v_id uuid;
+  v_cfg jsonb; v_by text; v_ag text; v_rows jsonb; v_date date; v_end text; v_h int; v_no int; v_id uuid;
 begin
   select config into v_cfg from public.leagues where id = p_league;
   if v_cfg is null then raise exception 'Fant ikke løpsserien.'; end if;
@@ -220,8 +220,12 @@ begin
   if not exists (select 1 from jsonb_array_elements(v_rows) r where lower(trim(r ->> 'name')) = lower(trim(v_ag))) then
     raise exception '% var ikke med i dette løpet.', v_ag; end if;
   v_date := nullif(v_cfg -> 'rounds' -> (p_round - 1) ->> 'date', '')::date;
+  v_end := nullif(v_cfg -> 'rounds' -> (p_round - 1) ->> 'end', '');
   v_h := coalesce(nullif(v_cfg -> 'protests' ->> 'deadlineH', '')::int, 48);
-  if v_date is not null and now() > ((v_date + 1)::timestamp at time zone 'Europe/Oslo') + make_interval(hours => v_h) then
+  -- Fristen regnes fra løpsslutt (klokkeslett på runden), ellers fra midnatt etter datoen
+  if v_date is not null and now() > ((case when v_end ~ '^\d{1,2}:\d{2}$' then v_date + v_end::time
+                                           else (v_date + 1)::timestamp end) at time zone 'Europe/Oslo')
+                                    + make_interval(hours => v_h) then
     raise exception 'Protestfristen for denne runden har gått ut.'; end if;
   if coalesce(v_cfg -> 'protests' ->> 'video', 'req') = 'req' and coalesce(trim(p_video), '') !~* '^https?://' then
     raise exception 'Legg ved en lenke til video (YouTube, Streamable e.l.).'; end if;

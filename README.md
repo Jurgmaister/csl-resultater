@@ -47,7 +47,8 @@ Slik slår du det på:
 1. Kjør `supabase/protester.sql` i Supabase (**SQL Editor → New query → lim inn → Run**). Den er også
    med nederst i `schema.sql` for nye prosjekter.
 2. **Oppsett → Protester**: kryss av for «Ta imot protester», og sett frister, antall protester per
-   runde og hendelsestyper. Sett dato på rundene under **Runder**. Fristen regnes fra midnatt etter løpsdagen.
+   runde og hendelsestyper. Sett dato og løpsslutt (klokkeslett) på rundene under **Runder**. Fristen (12, 24, 48 timer osv.)
+   regnes fra løpsslutt, eller fra midnatt etter løpsdagen hvis klokkeslett mangler.
 3. **Oppsett → Regler**: én regel per linje fra regelheftet (f.eks. «3.4 Overtaking»). Stewards velger regel
    fra denne listen når de avgjør en sak. «99 Annet» står alltid nederst, og da skriver stewarden regelen selv.
 4. **Oppsett → Stewards**: legg til e-posten til dem som skal avgjøre saker (arrangører kan også).

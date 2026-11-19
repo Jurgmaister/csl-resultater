@@ -349,13 +349,16 @@ const CORE = (() => {
     return out;
   }
 
-  /** Protestfrist: midnatt etter rundedatoen + deadlineH timer. Uten dato: ingen frist (null). */
+  /** Protestfrist: rundens dato + løpsslutt (end, «HH:MM») + deadlineH timer.
+   *  Uten løpsslutt: midnatt etter datoen. Uten dato: ingen frist (null). */
   function protestDeadline(league, round) {
     const cfg = protestDefaults(league.protests);
-    const d = ((league.rounds || [])[round - 1] || {}).date;
+    const rd = (league.rounds || [])[round - 1] || {}, d = rd.date;
     if (!d || !/^\d{4}-\d{2}-\d{2}$/.test(d)) return null;
     const [y, m, dd] = d.split("-").map(Number);
-    return new Date(y, m - 1, dd + 1, 0, 0, 0).getTime() + (+cfg.deadlineH || 0) * 3600000;
+    const t = /^(\d{1,2}):(\d{2})$/.exec(rd.end || "");
+    const base = t ? new Date(y, m - 1, dd, +t[1], +t[2], 0) : new Date(y, m - 1, dd + 1, 0, 0, 0);
+    return base.getTime() + (+cfg.deadlineH || 0) * 3600000;
   }
 
   return { defaultScale, norm, parseCSVText, parseCSV, parseJSON, parseFile, computeRace, computeStandings, raceKeys,

@@ -67,7 +67,8 @@ Legg aldri inn `service_role`- eller secret-nøkkelen, og ingen e-postadresser, 
   (`decision.pens`, eldre saker har bare `decision.pen`; les med `CORE.decisionPens`). Typer: poengtrekk, tidsstraff
   (sekunder på tiden for førere på samme runde som vinneren, sorterer på nytt) og DSQ. Manuelle straffer
   i `results.data.pen` kommer i tillegg.
-- Protestfrist: midnatt etter rundens dato + `deadlineH` timer (Europe/Oslo). Runder uten dato har ingen frist.
+- Protestfrist: rundens dato + løpsslutt (`rounds[i].end`, «HH:MM») + `deadlineH` timer (12–168, Europe/Oslo).
+  Uten løpsslutt regnes den fra midnatt etter datoen. Runder uten dato har ingen frist. Samme regel i `file_protest` (SQL).
 
 ## Design
 
